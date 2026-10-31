@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"modavd/internal/buildinfo"
+	"modavd/internal/components"
 	"modavd/internal/emu"
 	"modavd/internal/errs"
 	"modavd/internal/logx"
@@ -75,6 +76,14 @@ var (
 	optAutoMAS       = flagSpec{"automas-version", kindString, "V", "调用方 AUTO-MAS 的版本（新版要求更高的 AUTO-MAS 时不装）"}
 	optBootNoBridge  = flagSpec{"no-bridge", kindBool, "",
 		"这次开机不自动装执行桥（实例有执行桥的开机标记、桥还没装时默认会装）"}
+	optAcceptLicense = flagSpec{"accept-license", kindBool, "", "自动同意许可协议（自动化；协议全文仍会取回并打印）"}
+	optKeepDownloads = flagSpec{"keep-downloads", kindBool, "", "安装后保留 downloads 里的 zip"}
+	optMirror        = flagSpec{"mirror", kindString, "ID", "只用一个内置镜像：googledownloads_cn / tencent / google"}
+	optMirrorURL     = flagSpec{"mirror-url", kindString, "URL[,URL...]", "自定义镜像目录，可写多个，按顺序尝试"}
+	optConnectTO     = flagSpec{"connect-timeout", kindInt, "秒", "连接和响应头超时（默认 20）"}
+	optStallTO       = flagSpec{"stall-timeout", kindInt, "秒", "连续无数据超时（默认 30）"}
+	optManifestTO    = flagSpec{"manifest-timeout", kindInt, "秒", "许可清单整体超时（默认 40）"}
+	optTestFreeSpace = flagSpec{"test-free-space-mb", kindInt, "MB", "测试用：假装磁盘只剩这么多 MB"}
 )
 
 var commands []*command
@@ -167,6 +176,15 @@ func init() {
 			details: "路径、组件、模拟器版本、硬件加速、Vulkan、磁盘、内存。没通过也返回 0：看 ready（--json）或结论那一行。",
 			flags:   []flagSpec{optCheckMB},
 			run:     runCheck, human: humanOf(formatCheck),
+		},
+		{
+			name: "components", args: "[fetch|status] [--accept-license] [--mirror ID] [--mirror-url URL[,URL...]]",
+			summary: "查看或补全 Google 组件（adb 和系统镜像）",
+			details: "status 查看组件；fetch 先取并显示《Android 软件开发套件许可协议》，同意后下载并安装缺少的 Windows 组件。" +
+				"支持断点续传、镜像回落和 --json；darwin、linux 暂无组件清单。",
+			flags:  []flagSpec{optAcceptLicense, optKeepDownloads, optMirror, optMirrorURL, optConnectTO, optStallTO, optManifestTO, optTestFreeSpace},
+			maxPos: 1,
+			run:    runComponents, human: formatComponents,
 		},
 		{
 			name: "window", args: "<i> show|hide", summary: "显示或隐藏实例的窗口",
@@ -338,6 +356,11 @@ type HelpResult struct {
 	Commands []HelpEntry `json:"commands"`
 	// all: the overview (global flags, exit codes) is printed too; false for `help <command>`.
 	all bool
+}
+
+type ComponentsStatusResult struct {
+	Root       string                 `json:"root"`
+	Components []root.ComponentStatus `json:"components"`
 }
 
 // ---- request building (pure, tested directly) --------------------------------------------------------------------
@@ -774,6 +797,67 @@ func runCheck(c *cmdCtx) (any, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+func runComponents(c *cmdCtx) (any, error) {
+	action := "status"
+	if len(c.inv.pos) > 0 {
+		action = strings.ToLower(c.inv.pos[0])
+	}
+	if action != "fetch" && action != "status" {
+		return nil, errs.Newf(errs.Usage, "只能是 fetch 或 status，收到「%s」", action).WithAdvice(findCommand("components").usageAdvice())
+	}
+	r, err := c.deps.resolveRoot(c.inv.root)
+	if err != nil {
+		return nil, err
+	}
+	if action == "status" {
+		return &ComponentsStatusResult{Root: r.Dir, Components: r.Components()}, nil
+	}
+	to := func(name string, d time.Duration) (time.Duration, error) {
+		if !c.inv.isSet(name) {
+			return d, nil
+		}
+		n := c.inv.intOpt(name)
+		if n <= 0 {
+			return 0, errs.Newf(errs.InvalidArgument, "--%s 要给大于 0 的秒数，收到 %d", name, n)
+		}
+		return time.Duration(n) * time.Second, nil
+	}
+	connect, err := to("connect-timeout", 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	stall, err := to("stall-timeout", 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := to("manifest-timeout", 40*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	free := int64(-1)
+	if c.inv.isSet("test-free-space-mb") {
+		n := c.inv.intOpt("test-free-space-mb")
+		if n < 0 {
+			return nil, errs.New(errs.InvalidArgument, "--test-free-space-mb 不能是负数")
+		}
+		free = int64(n)
+	}
+	var urls []string
+	if c.inv.isSet("mirror-url") {
+		urls = []string{c.inv.strOpt("mirror-url")}
+	}
+	result, err := components.Fetch(c.ctx, r, components.Options{
+		Root: r, AcceptLicense: c.inv.boolOpt("accept-license"), JSON: c.inv.json, Input: c.stdin,
+		KeepDownloads: c.inv.boolOpt("keep-downloads"), Mirror: c.inv.strOpt("mirror"), MirrorURLs: urls,
+		ConnectTimeout: connect, StallTimeout: stall, ManifestTimeout: manifest, TestFreeSpaceMB: free,
+		Progress: func(msg string) { c.log.Infof("%s", msg) }, License: func(text string) { c.log.Infof("%s", text) },
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func runWindow(c *cmdCtx) (any, error) {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"modavd/internal/components"
 	"modavd/internal/emu"
 )
 
@@ -488,6 +489,41 @@ func formatCheck(w io.Writer, r *emu.CheckResult) {
 			}
 			fmt.Fprintln(w, line)
 		}
+	}
+}
+
+func formatComponents(w io.Writer, data any) {
+	switch r := data.(type) {
+	case *ComponentsStatusResult:
+		fmt.Fprintf(w, "根目录：%s\n", r.Root)
+		for _, c := range r.Components {
+			mark := "✗"
+			if c.Installed {
+				mark = "✓"
+			}
+			line := fmt.Sprintf("%s %s", mark, c.Name)
+			if c.Version != "" {
+				line += " " + c.Version
+			}
+			if !c.Installed {
+				line += " 未安装"
+			}
+			fmt.Fprintln(w, line)
+		}
+	case *components.Result:
+		if r.License != "" {
+			fmt.Fprintln(w, "已取回 Android SDK 许可协议并完成许可确认")
+		}
+		for _, c := range r.Components {
+			if c.Skipped {
+				fmt.Fprintf(w, "已有：%s（版本 %s），跳过\n", c.Name, c.Version)
+				continue
+			}
+			if c.Installed {
+				fmt.Fprintf(w, "已装好：%s\n", c.Name)
+			}
+		}
+		fmt.Fprintln(w, "完成，可以在 AUTO-MAS 里添加这个文件夹了。")
 	}
 }
 

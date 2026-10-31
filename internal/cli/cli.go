@@ -18,6 +18,7 @@
 //	stop --all [--force]                                  StopAllResult {"results":[StopResult],"failed":[{index,error}]}
 //	restart <i> [--window] [--timeout 300] [--force]      emu.StartResult (stop, wait for qemu to exit, then start)
 //	check [--memory M]                                    emu.CheckResult (exit 0 even when not ready: see "ready")
+//	components [fetch|status]                              component status or Windows Google component fetch result
 //	window <i> show|hide                                  emu.WindowResult
 //	install <i> <apk>                                     emu.InstallResult
 //	shell <i> [--timeout S] <command...>                  emu.ShellResult
