@@ -16,6 +16,7 @@ import (
 	"modavd/internal/errs"
 	"modavd/internal/logx"
 	"modavd/internal/mcp"
+	"modavd/internal/report"
 	"modavd/internal/root"
 	"modavd/internal/update"
 	"modavd/internal/win"
@@ -84,6 +85,11 @@ var (
 	optStallTO       = flagSpec{"stall-timeout", kindInt, "秒", "连续无数据超时（默认 30）"}
 	optManifestTO    = flagSpec{"manifest-timeout", kindInt, "秒", "许可清单整体超时（默认 40）"}
 	optTestFreeSpace = flagSpec{"test-free-space-mb", kindInt, "MB", "测试用：假装磁盘只剩这么多 MB"}
+	optNoClipboard   = flagSpec{"no-clipboard", kindBool, "", "不复制到剪贴板"}
+	optOutDir        = flagSpec{"out-dir", kindString, "目录", "问题包输出目录（默认桌面）"}
+	optStageDir      = flagSpec{"stage-dir", kindString, "目录", "暂存目录的父目录（默认系统临时目录）"}
+	optKeepStage     = flagSpec{"keep-stage", kindBool, "", "保留暂存目录"}
+	optNoExplorer    = flagSpec{"no-explorer", kindBool, "", "不打开资源管理器"}
 )
 
 var commands []*command
@@ -176,6 +182,18 @@ func init() {
 			details: "路径、组件、模拟器版本、硬件加速、Vulkan、磁盘、内存。没通过也返回 0：看 ready（--json）或结论那一行。",
 			flags:   []flagSpec{optCheckMB},
 			run:     runCheck, human: humanOf(formatCheck),
+		},
+		{
+			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例游戏信息",
+			details: "只读收集 Windows 配置；只在私有 adb server 已经监听时按主机协议查询开着实例的应用，不会启动 adb 或碰 5037。",
+			flags:   []flagSpec{optNoClipboard}, final: true,
+			run: runReportConfig, human: humanReportConfig,
+		},
+		{
+			name: "collect-info", args: "[--out-dir 目录] [--stage-dir 目录] [--keep-stage] [--no-explorer]", summary: "收集问题信息并打包",
+			details: "只读收集日志、实例配置和现场信息，过滤磁盘镜像以及 MAS 的 config、data；每节出错仍会继续并写入 summary.txt。",
+			flags:   []flagSpec{optOutDir, optStageDir, optKeepStage, optNoExplorer}, final: true,
+			run: runCollectInfo, human: humanCollectInfo,
 		},
 		{
 			name: "components", args: "[fetch|status] [--accept-license] [--mirror ID] [--mirror-url URL[,URL...]]",
@@ -797,6 +815,47 @@ func runCheck(c *cmdCtx) (any, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+func runReportConfig(c *cmdCtx) (any, error) {
+	r, err := c.deps.resolveRoot(c.inv.root)
+	if err != nil {
+		return nil, err
+	}
+	return report.BuildConfig(c.ctx, r, report.ConfigOptions{NoClipboard: c.inv.boolOpt("no-clipboard")})
+}
+
+func humanReportConfig(w io.Writer, data any) {
+	if r, ok := data.(*report.ConfigResult); ok && r != nil {
+		fmt.Fprintln(w, r.Text)
+		if !strings.HasSuffix(r.Text, "\n") {
+			fmt.Fprintln(w)
+		}
+	}
+}
+
+func runCollectInfo(c *cmdCtx) (any, error) {
+	r, err := c.deps.resolveRoot(c.inv.root)
+	if err != nil {
+		return nil, err
+	}
+	return report.Collect(c.ctx, r, report.CollectOptions{
+		OutDir: c.inv.strOpt("out-dir"), StageDir: c.inv.strOpt("stage-dir"),
+		KeepStage: c.inv.boolOpt("keep-stage"), NoExplorer: c.inv.boolOpt("no-explorer"),
+	})
+}
+
+func humanCollectInfo(w io.Writer, data any) {
+	if r, ok := data.(*report.CollectResult); ok && r != nil {
+		fmt.Fprintln(w, "收集完成。")
+		fmt.Fprintln(w, "文件："+r.ZipPath)
+		if r.Stage != "" {
+			fmt.Fprintln(w, "暂存目录："+r.Stage)
+		}
+		if len(r.Errors) > 0 {
+			fmt.Fprintf(w, "有 %d 节没收集成功，原因写在 zip 里的 summary.txt。\n", len(r.Errors))
+		}
+	}
 }
 
 func runComponents(c *cmdCtx) (any, error) {

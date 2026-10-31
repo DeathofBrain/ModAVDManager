@@ -19,6 +19,8 @@
 //	restart <i> [--window] [--timeout 300] [--force]      emu.StartResult (stop, wait for qemu to exit, then start)
 //	check [--memory M]                                    emu.CheckResult (exit 0 even when not ready: see "ready")
 //	components [fetch|status]                              component status or Windows Google component fetch result
+//	report-config [--no-clipboard]                        read-only configuration and installed-game report
+//	collect-info [--out-dir D] [--stage-dir D] ...        read-only diagnostics zip
 //	window <i> show|hide                                  emu.WindowResult
 //	install <i> <apk>                                     emu.InstallResult
 //	shell <i> [--timeout S] <command...>                  emu.ShellResult
