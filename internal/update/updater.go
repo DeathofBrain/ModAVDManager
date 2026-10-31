@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -59,6 +60,13 @@ type Updater struct {
 	githubAPI, mirrorAPI string
 	httpClient           *http.Client
 	scan                 func(programs bool) ([]processUse, error)
+}
+
+func unsupportedUpdatePlatform() error {
+	if runtime.GOOS != "windows" {
+		return errs.New(errs.Unsupported, "当前平台暂不支持更新")
+	}
+	return nil
 }
 
 // New is the updater of r.
@@ -229,6 +237,9 @@ func (u *Updater) begin(st *Status) (*win.FileLock, error) {
 
 // Recover finishes or undoes a swap that was cut off and drops a preparation that was.
 func (u *Updater) Recover(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	lock, err := u.begin(st)
 	if err != nil {
@@ -247,6 +258,9 @@ func (u *Updater) Recover(ctx context.Context) (*Status, error) {
 
 // Prepare downloads, verifies and stages the latest version (instances may keep running).
 func (u *Updater) Prepare(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	if !st.Updatable {
 		return st, errs.New(errs.NotReady, st.NotUpdatableReason)
@@ -468,6 +482,9 @@ func (u *Updater) stage(ctx context.Context, r *release) (err error) {
 // Install brings the root to the latest version: prepares it when it is newer and not staged yet, then swaps it in
 // (every instance off, no other program of the root running). Nothing newer and nothing staged: up to date.
 func (u *Updater) Install(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	if !st.Updatable {
 		return st, errs.New(errs.NotReady, st.NotUpdatableReason)

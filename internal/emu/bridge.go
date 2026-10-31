@@ -65,6 +65,9 @@ var bridgeQemuGoneWait = 30 * time.Second
 const bridgeMetaKey = "bridge"
 
 func (m *Manager) bridgeWanted(i int) bool {
+	if !bridgeGuestSupported(m.Root, i) {
+		return false
+	}
 	meta := m.Root.InstanceMeta(i)
 	if meta == nil {
 		return true
@@ -100,7 +103,7 @@ func bridgeGuestSupported(r *root.Root, i int) bool {
 			continue
 		}
 		k, v = strings.TrimSpace(k), strings.ToLower(strings.TrimSpace(v))
-		if (k == "abi.type" || k == "hw.cpu.arch") && (v == "arm64" || v == "aarch64") {
+		if (k == "abi.type" || k == "hw.cpu.arch") && (v == "arm64" || v == "aarch64" || v == "arm64-v8a") {
 			return false
 		}
 	}
@@ -155,6 +158,9 @@ type bridgeRun struct {
 // logs\modavd-bridge-<i>-<time>.log; the console encoding is set to UTF-8 first, otherwise a process without a console
 // of its own gets the Chinese as question marks.
 func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reboot bool) (bridgeRun, error) {
+	if err := requireWindows(); err != nil {
+		return bridgeRun{Code: -1}, err
+	}
 	script := filepath.Join(m.Root.Dir, "tools", bridgeScriptName)
 	if !regularFile(script) {
 		return bridgeRun{Code: -1}, errs.Newf(errs.NotFound, "找不到 %s：包不完整", script).
@@ -169,7 +175,11 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 		call = append(call, "-Reboot")
 	}
 	command := "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + strings.Join(call, " ") + "; exit $LASTEXITCODE"
-	ps := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	psRoot := os.Getenv("SystemRoot")
+	if psRoot == "" {
+		return bridgeRun{Code: -1}, errs.New(errs.Unsupported, "找不到 Windows 系统目录，不能运行执行桥脚本")
+	}
+	ps := filepath.Join(psRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 	cctx, cancel := context.WithTimeout(ctx, bridgeScriptTimeout)
 	defer cancel()
@@ -214,6 +224,9 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 // and the next start tries again. A cold boot that fails is the start's error (the instance is off or half up then).
 // Returns the result of the last start.
 func (m *Manager) finishBridge(ctx context.Context, i int, opt StartOptions, res *StartResult) (*StartResult, error) {
+	if err := requireWindows(); err != nil {
+		return res, err
+	}
 	if !bridgeGuestSupported(m.Root, i) {
 		return res, nil
 	}
@@ -331,6 +344,9 @@ type BridgeResult struct {
 //
 // An instance that was off is stopped again.
 func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if _, err := m.instance(i); err != nil {
 		return nil, err
 	}
@@ -338,6 +354,14 @@ func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResu
 		return nil, err
 	}
 	if !bridgeGuestSupported(m.Root, i) {
+		if action == "uninstall" {
+			if err := m.setBridgeWanted(i, false); err != nil {
+				return nil, err
+			}
+			if p := bridgeMarker(m.Root, i); regularFile(p) {
+				_ = os.Remove(p)
+			}
+		}
 		return &BridgeResult{Index: i, Action: action, ExitCode: 0, Message: "arm64 客体不需要执行桥", Warnings: []string{}}, nil
 	}
 	bridgeLock, ok, err := win.TryLock(m.lockPath(i, "bridge"))

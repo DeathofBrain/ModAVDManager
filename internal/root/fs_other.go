@@ -5,7 +5,6 @@ package root
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -20,9 +19,6 @@ func retryableReplaceError(err error) bool {
 type fileLock struct{ f *os.File }
 
 func lockFile(path string, wait time.Duration) (*fileLock, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, false, err
-	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, false, err

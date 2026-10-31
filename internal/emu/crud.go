@@ -20,6 +20,9 @@ import (
 // Create makes a new instance (validated options, free index and ports), sets it up with one headless boot
 // (createinit.go) and returns it, stopped. req.Resume runs that setup again on an instance whose setup failed.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (*InstanceInfo, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if req.Resume {
 		return m.resumeCreate(ctx, req)
 	}
@@ -168,6 +171,9 @@ func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest) (*Instanc
 
 // Update changes title / memory / cpu / fps / data partition size (next boot).
 func (m *Manager) Update(ctx context.Context, i int, req UpdateRequest) (*UpdateResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if _, err := m.instance(i); err != nil {
 		return nil, err
 	}
@@ -208,6 +214,9 @@ func (m *Manager) Update(ctx context.Context, i int, req UpdateRequest) (*Update
 // without this the retry the error advises would end in "不存在". errs.NotFound only when none of mas_<i>.ini,
 // mas_<i>.avd and instances.<i> is there.
 func (m *Manager) Delete(ctx context.Context, i int) (*DeleteResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	in, err := m.instance(i)
 	var leftovers []string
 	if errs.CodeOf(err) == errs.NotFound {

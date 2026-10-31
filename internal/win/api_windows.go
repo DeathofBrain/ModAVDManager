@@ -27,6 +27,13 @@ func GetConsoleWindow() uintptr {
 
 var procMessageBoxW = syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
 
+const (
+	mbOK            = 0x00000000
+	mbIconError     = 0x00000010
+	mbSetForeground = 0x00010000
+	mbTopmost       = 0x00040000
+)
+
 func MessageBox(msg string) error {
 	text, err := syscall.UTF16PtrFromString(msg)
 	if err != nil {
@@ -36,7 +43,10 @@ func MessageBox(msg string) error {
 	if err != nil {
 		return err
 	}
-	if r, _, e := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(caption)), 0x50010); r == 0 {
+	if err := procMessageBoxW.Find(); err != nil {
+		return err
+	}
+	if r, _, e := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(caption)), mbOK|mbIconError|mbSetForeground|mbTopmost); r == 0 {
 		return e
 	}
 	return nil
