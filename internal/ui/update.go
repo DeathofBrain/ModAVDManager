@@ -1,5 +1,3 @@
-//go:build windows
-
 package ui
 
 // The update part of the manager's settings (API.md "更新"): the root's ModAVD package version and update state, the

@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package update updates the ModAVD package of a root (emulator, components, scripts and this manager) from GitHub
 // or MirrorChyan, the way AUTO-MAS's own updater does and on the same files under <root>\.update (state.go), so the
 // two can take over each other's half-done work while both exist. AUTO-MAS keeps its updater for two more major
@@ -116,7 +114,7 @@ func (u *Updater) notUpdatable() string {
 	if u.Root.LocalSDKRoot() != "" {
 		return "这个根目录在 mas-avd.json 里设了 sdkRoot（开发用的本地 SDK），不更新"
 	}
-	if !isFile(filepath.Join(u.l.emulator(), "emulator.exe")) {
+	if !isFile(filepath.Join(u.l.emulator(), root.CurrentPlatform().Emulator)) {
 		return `这个根目录里没有 sdk\emulator，请先放好魔改 AVD`
 	}
 	return ""

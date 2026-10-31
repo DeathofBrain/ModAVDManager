@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package emu is the instance lifecycle on one ModAVD root: list / info / create / update / delete, start (boot +
 // the per-boot tuning + the one-time first-boot setup), stop (Android shutdown, falling back to sync + kill), host
 // checks. The CLI and the MCP server are thin layers over Manager.
@@ -152,7 +150,11 @@ func cmdlineMatches(cmdline []string, avdName string, console int) bool {
 	return hasAvd && hasPort
 }
 
-func isQemuName(name string) bool { return strings.HasPrefix(strings.ToLower(name), "qemu-system") }
+func isQemuName(name string) bool {
+	n := strings.ToLower(name)
+	q := strings.TrimSuffix(strings.ToLower(root.CurrentPlatform().QEMU), ".exe")
+	return strings.HasPrefix(n, q) || strings.HasPrefix(n, "qemu-system")
+}
 
 // scanQemuOf finds, with one process snapshot, the qemu process (qemu-system-x86_64[-headless].exe) of each of the
 // indexes whose command line matches and that adb.QemuBelongsTo one of roots. The same-numbered instance of another

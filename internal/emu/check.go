@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Host checks before a boot. Port of AUTO-MAS precheck.py (+ host.py check_acceleration / parse_accel_check):
@@ -26,7 +24,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"modavd/internal/adb"
@@ -438,7 +435,7 @@ func (m *Manager) checkAcceleration(ctx context.Context, useCache bool) accelRes
 	cmd.Env = m.ADB.Env()
 	// Like the boot itself (launch.go): our working directory may be anywhere, the emulator's own is always there.
 	cmd.Dir = filepath.Dir(exe)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: win.HideConsole}
+	win.HideConsoleCmd(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

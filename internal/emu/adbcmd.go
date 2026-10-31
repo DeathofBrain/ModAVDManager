@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // adb for callers: one guest shell command (MCP tool) and the `modavd adb <i> ...` passthrough. Both go to the
@@ -12,7 +10,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"modavd/internal/errs"
@@ -66,7 +63,7 @@ func (m *Manager) AdbPassthrough(ctx context.Context, i int, args []string, stdi
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	if !hasConsole() {
 		// Without a console of ours a console child would get a new, visible one.
-		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: win.HideConsole}
+		win.HideConsoleCmd(cmd)
 	}
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
@@ -86,13 +83,7 @@ func (m *Manager) AdbPassthrough(ctx context.Context, i int, args []string, stdi
 	return 1, errs.Wrap(errs.Internal, err, "adb 运行失败: "+err.Error())
 }
 
-var procGetConsoleWindow = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
-
 // hasConsole: this process is attached to a console (a child then shares it and opens no window of its own).
 func hasConsole() bool {
-	if procGetConsoleWindow.Find() != nil {
-		return false
-	}
-	h, _, _ := procGetConsoleWindow.Call()
-	return h != 0
+	return win.GetConsoleWindow() != 0
 }

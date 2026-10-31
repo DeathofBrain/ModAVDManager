@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Create / update / delete. Port of AUTO-MAS manager.py create_instance / _free_index / write_instance_settings /

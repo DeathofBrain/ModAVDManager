@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package mcp is the Model Context Protocol server of modavd (`modavd mcp`): JSON-RPC 2.0 over stdio, one tool per
 // basic operation of emu.Manager.
 //

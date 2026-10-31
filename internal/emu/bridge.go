@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // The arm64 execution bridge by default (10-30). A new instance gets the bridge's boot marker at create, so its
@@ -25,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"modavd/internal/avd"
@@ -88,6 +85,27 @@ func (m *Manager) setBridgeWanted(i int, on bool) error {
 }
 
 func bridgeMarker(r *root.Root, i int) string { return filepath.Join(avd.Dir(r, i), bridgeMarkerName) }
+
+// bridgeGuestSupported limits the Windows PowerShell bridge to x86_64 guests.
+// Existing and externally-created arm64 AVDs are left alone; a missing or
+// unreadable config remains conservative and keeps the historical behavior.
+func bridgeGuestSupported(r *root.Root, i int) bool {
+	b, err := os.ReadFile(avd.ConfigPath(r, i))
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.ToLower(strings.TrimSpace(v))
+		if (k == "abi.type" || k == "hw.cpu.arch") && (v == "arm64" || v == "aarch64") {
+			return false
+		}
+	}
+	return true
+}
 
 // writeBridgeMarker places the boot marker unless it is there already.
 func writeBridgeMarker(r *root.Root, i int) error {
@@ -158,7 +176,7 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 	cmd := exec.CommandContext(cctx, ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command)
 	// the script's adb calls: same environment as ours (an adb that starts a server must not scan local ports either)
 	cmd.Env = m.ADB.Env()
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: win.HideConsole}
+	win.HideConsoleCmd(cmd)
 	// a killed powershell may leave an adb child holding the output pipe: stop waiting for it (as adbcmd.go)
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
@@ -196,6 +214,9 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 // and the next start tries again. A cold boot that fails is the start's error (the instance is off or half up then).
 // Returns the result of the last start.
 func (m *Manager) finishBridge(ctx context.Context, i int, opt StartOptions, res *StartResult) (*StartResult, error) {
+	if !bridgeGuestSupported(m.Root, i) {
+		return res, nil
+	}
 	// Two starts of one instance (CLI, MCP, the manager) must not install at the same time: the second one leaves it.
 	lock, ok, err := win.TryLock(m.lockPath(i, "bridge"))
 	if err != nil || !ok {
@@ -315,6 +336,9 @@ func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResu
 	}
 	if err := m.notCreated(i, "不能装卸执行桥"); err != nil {
 		return nil, err
+	}
+	if !bridgeGuestSupported(m.Root, i) {
+		return &BridgeResult{Index: i, Action: action, ExitCode: 0, Message: "arm64 客体不需要执行桥", Warnings: []string{}}, nil
 	}
 	bridgeLock, ok, err := win.TryLock(m.lockPath(i, "bridge"))
 	if err != nil {

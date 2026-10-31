@@ -41,6 +41,11 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test ./...
+      - name: cross-platform vet
+        shell: pwsh
+        run: |
+          $env:GOOS = 'darwin'; $env:GOARCH = 'arm64'; go vet ./...
+          $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; go vet ./...
       - name: build
         shell: pwsh
         run: |
@@ -63,3 +68,33 @@ jobs:
           python -B -I -X utf8 scripts/repo_checks.py
       - name: script tests
         run: python -B -I -X utf8 scripts/test_repo_checks.py
+
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: go version
+        id: go
+        shell: bash
+        run: |
+          v=$(sed -n 's/^toolchain[[:space:]]\+go//p' go.mod | head -n 1)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...

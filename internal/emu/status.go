@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Queries: list / info and the InstanceInfo every result carries. Port of AUTO-MAS manager.py getInfo / _status_of /

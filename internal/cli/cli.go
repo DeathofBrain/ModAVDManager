@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package cli is the command line of modavd: a thin layer over emu.Manager, plus mcp.Serve for `modavd mcp`.
 //
 // Contract (also printed by `modavd help`; part of buildinfo.Protocol):

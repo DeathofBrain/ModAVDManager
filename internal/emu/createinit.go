@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // A new instance is set up before create returns (10-30): one headless boot that runs the per-boot setup, the host

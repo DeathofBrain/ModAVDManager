@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Shutdown. Faithful port of AUTO-MAS manager.py close / _close / _graceful_shutdown / _sync_before_kill /
@@ -39,7 +37,6 @@ package emu
 import (
 	"context"
 	"fmt"
-	"syscall"
 	"time"
 
 	"modavd/internal/adb"
@@ -392,40 +389,12 @@ func (q qemuKill) run(ctx context.Context, log *logx.Logger, i int, pid uint32, 
 	return nil
 }
 
-const (
-	queryLimitedAccess = 0x1000            // PROCESS_QUERY_LIMITED_INFORMATION
-	errPIDUnused       = syscall.Errno(87) // ERROR_INVALID_PARAMETER from OpenProcess: no process has this PID
-)
-
 // terminateRefused: Windows will not open p for terminating, so no kill of ours can even begin (it runs at a higher
 // integrity level, e.g. started by AUTO-MAS running as administrator). false when it can be opened: a kill that
 // failed anyway met a process that is already exiting (see qemuKill.run). false too when p is gone: its PID is
 // unused, or names a newer process (the creation time differs).
 func terminateRefused(p win.Process) bool {
-	if p.PID == 0 {
-		return false
-	}
-	h, err := syscall.OpenProcess(syscall.PROCESS_TERMINATE, false, p.PID)
-	if err == nil {
-		syscall.CloseHandle(h)
-		return false
-	}
-	if err == errPIDUnused {
-		return false
-	}
-	if p.Created != 0 {
-		// A newer process under the same PID may be the one refusing: then p itself is gone. Query access is
-		// granted across integrity levels.
-		if h, err := syscall.OpenProcess(queryLimitedAccess, false, p.PID); err == nil {
-			defer syscall.CloseHandle(h)
-			var c, e, k, u syscall.Filetime
-			if syscall.GetProcessTimes(h, &c, &e, &k, &u) == nil &&
-				uint64(c.HighDateTime)<<32|uint64(c.LowDateTime) != p.Created {
-				return false
-			}
-		}
-	}
-	return true
+	return win.TerminateRefused(p)
 }
 
 // qemuNotEnded is the error of a stop after which qemu pid still runs because Windows refused to terminate it
