@@ -20,7 +20,15 @@ const (
 	kindBool flagKind = iota
 	kindInt
 	kindString
+	kindStrings // a string that may be given more than once: every value, in order
 )
+
+// stringList is the value of a kindStrings flag.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+func (s *stringList) Get() any           { return []string(*s) }
 
 type flagSpec struct {
 	name string
@@ -248,6 +256,8 @@ func (c *command) newFlagSet() *flag.FlagSet {
 			fs.Bool(f.name, false, f.help)
 		case kindInt:
 			fs.Int(f.name, 0, f.help)
+		case kindStrings:
+			fs.Var(new(stringList), f.name, f.help)
 		default:
 			fs.String(f.name, "", f.help)
 		}
@@ -300,6 +310,12 @@ func (inv *invocation) intOpt(name string) int {
 
 func (inv *invocation) strOpt(name string) string {
 	s, _ := inv.get(name).(string)
+	return s
+}
+
+// strsOpt is every value of a kindStrings flag.
+func (inv *invocation) strsOpt(name string) []string {
+	s, _ := inv.get(name).([]string)
 	return s
 }
 

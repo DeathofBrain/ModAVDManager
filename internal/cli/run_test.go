@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"modavd/internal/buildinfo"
+	"modavd/internal/components"
 	"modavd/internal/emu"
 	"modavd/internal/errs"
 	"modavd/internal/logx"
@@ -206,6 +207,8 @@ type harness struct {
 	rootErr  error // newManager fails with this
 	mcpCall  func(ctx context.Context, in io.Reader, out io.Writer, opt mcp.Options) error
 	resolve  func(string) (*root.Root, error)
+	fetch    func(ctx context.Context, r *root.Root, opt components.Options) (*components.Result, error)
+	stdin    string
 }
 
 type result struct {
@@ -228,8 +231,9 @@ func (h *harness) run(t *testing.T, ctx context.Context, args ...string) result 
 			h.fake.log = log
 			return h.fake, nil
 		},
-		resolveRoot: h.resolve,
-		serveMCP:    h.mcpCall,
+		resolveRoot:     h.resolve,
+		serveMCP:        h.mcpCall,
+		fetchComponents: h.fetch,
 	}
 	if d.resolveRoot == nil {
 		d.resolveRoot = func(string) (*root.Root, error) { return nil, errs.New(errs.NotFound, "没有根目录") }
@@ -237,7 +241,7 @@ func (h *harness) run(t *testing.T, ctx context.Context, args ...string) result 
 	if d.serveMCP == nil {
 		d.serveMCP = func(context.Context, io.Reader, io.Writer, mcp.Options) error { return nil }
 	}
-	code := run(ctx, args, strings.NewReader(""), &out, &errb, d)
+	code := run(ctx, args, strings.NewReader(h.stdin), &out, &errb, d)
 	return result{code, out.String(), errb.String()}
 }
 
