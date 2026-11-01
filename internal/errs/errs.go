@@ -28,6 +28,13 @@ const (
 	NotImplemented     = "not_implemented"
 )
 
+// Codes of components fetch.
+const (
+	LicenseDeclined       = "license_declined"       // the Android SDK license was not accepted; nothing downloaded
+	ComponentsUnavailable = "components_unavailable" // no mirror delivered the license or a component (offline, HTTP error, timeout, size)
+	ComponentsRejected    = "components_rejected"    // a download failed its checks (SHA-1 on every mirror; files, pins, version unpacked)
+)
+
 type Error struct {
 	Code    string
 	Message string
@@ -52,6 +59,9 @@ func Newf(code, format string, args ...any) *Error {
 
 // Wrap keeps err as the cause; the message is shown, the cause only in debug output.
 func Wrap(code string, err error, message string) *Error {
+	if code == Internal && CodeOf(err) == Unsupported {
+		code = Unsupported
+	}
 	return &Error{Code: code, Message: message, Cause: err}
 }
 
@@ -85,13 +95,14 @@ func As(err error) *Error {
 }
 
 // ExitCode maps an error to the process exit code (part of the contract, see README):
-// 0 ok, 1 internal / other, 2 usage / invalid argument, 3 not found, 4 not ready / precheck failed,
-// 5 busy / already exists / port conflict, 6 timeout, 7 launch failed, 8 canceled, 9 update unavailable / rejected.
+// 0 ok, 1 internal / other, 2 usage / invalid argument / license declined, 3 not found, 4 not ready / precheck
+// failed / unsupported, 5 busy / already exists / port conflict, 6 timeout, 7 launch failed, 8 canceled, 9 update or
+// components unavailable / rejected.
 func ExitCode(err error) int {
 	switch CodeOf(err) {
 	case "":
 		return 0
-	case Usage, InvalidArgument:
+	case Usage, InvalidArgument, LicenseDeclined:
 		return 2
 	case NotFound:
 		return 3
@@ -105,7 +116,7 @@ func ExitCode(err error) int {
 		return 7
 	case Canceled:
 		return 8
-	case UpdateUnavailable, UpdateRejected:
+	case UpdateUnavailable, UpdateRejected, ComponentsUnavailable, ComponentsRejected:
 		return 9
 	default:
 		return 1

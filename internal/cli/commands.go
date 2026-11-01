@@ -77,20 +77,28 @@ var (
 	optAutoMAS       = flagSpec{"automas-version", kindString, "V", "调用方 AUTO-MAS 的版本（新版要求更高的 AUTO-MAS 时不装）"}
 	optBootNoBridge  = flagSpec{"no-bridge", kindBool, "",
 		"这次开机不自动装执行桥（实例有执行桥的开机标记、桥还没装时默认会装）"}
-	optAcceptLicense = flagSpec{"accept-license", kindBool, "", "自动同意许可协议（自动化；协议全文仍会取回并打印）"}
-	optKeepDownloads = flagSpec{"keep-downloads", kindBool, "", "安装后保留 downloads 里的 zip"}
+	optAcceptLicense = flagSpec{"accept-license", kindBool, "",
+		"不询问，直接视为同意《Android 软件开发套件许可协议》（自动化用；协议全文照样取回并打印，取不到照样退出）；--json 时必须给"}
+	optKeepDownloads = flagSpec{"keep-downloads", kindBool, "", "装好后保留 downloads 里的 zip（默认装好即删，省 1.5 GB）"}
 	optMirror        = flagSpec{"mirror", kindString, "ID", "只用一个内置镜像：googledownloads_cn / tencent / google"}
-	optMirrorURL     = flagSpec{"mirror-url", kindString, "URL[,URL...]", "自定义镜像目录，可写多个，按顺序尝试"}
-	optConnectTO     = flagSpec{"connect-timeout", kindInt, "秒", "连接和响应头超时（默认 20）"}
-	optStallTO       = flagSpec{"stall-timeout", kindInt, "秒", "连续无数据超时（默认 30）"}
-	optManifestTO    = flagSpec{"manifest-timeout", kindInt, "秒", "许可清单整体超时（默认 40）"}
-	optTestFreeSpace = flagSpec{"test-free-space-mb", kindInt, "MB", "测试用：假装磁盘只剩这么多 MB"}
+	optMirrorURL     = flagSpec{"mirror-url", kindStrings, "URL",
+		"自建或测试用：用这个目录地址代替内置的三个镜像，可写多次或用逗号隔开，按顺序试；给了就不看 --mirror"}
+	optConnectTO = flagSpec{"connect-timeout", kindInt, "秒",
+		"等服务器回应（连接、TLS 握手、返回响应头）的上限，1–600，默认 20，超时换下一个镜像"}
+	optStallTO = flagSpec{"stall-timeout", kindInt, "秒",
+		"下载或取清单时，连续这么久一个字节都没收到就算卡住，1–600，默认 30，超时换下一个镜像"}
+	optManifestTO    = flagSpec{"manifest-timeout", kindInt, "秒", "取许可协议清单（repository2-3.xml）整体的上限，1–1800，默认 40"}
+	optTestFreeSpace = flagSpec{"test-free-space-mb", kindInt, "MB", "仅测试用：假装磁盘只剩这么多 MB，用来演示「空间不够」的提示"}
 	optNoClipboard   = flagSpec{"no-clipboard", kindBool, "", "不复制到剪贴板"}
 	optOutDir        = flagSpec{"out-dir", kindString, "目录", "问题包输出目录（默认桌面）"}
 	optStageDir      = flagSpec{"stage-dir", kindString, "目录", "暂存目录的父目录（默认 %TEMP%）"}
 	optKeepStage     = flagSpec{"keep-stage", kindBool, "", "保留暂存目录"}
 	optNoExplorer    = flagSpec{"no-explorer", kindBool, "", "不打开资源管理器"}
 )
+
+// fetchFlags are the options only components fetch takes.
+var fetchFlags = []flagSpec{optAcceptLicense, optKeepDownloads, optMirror, optMirrorURL, optConnectTO, optStallTO,
+	optManifestTO, optTestFreeSpace}
 
 var commands []*command
 
@@ -201,13 +209,19 @@ func init() {
 			run: runCollectInfo, human: humanCollectInfo,
 		},
 		{
-			name: "components", args: "[fetch|status] [--accept-license] [--mirror ID] [--mirror-url URL[,URL...]]",
+			name: "components", args: "[status] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]",
 			summary: "查看或补全 Google 组件（adb 和系统镜像）",
-			details: "status 查看组件；fetch 先取并显示《Android 软件开发套件许可协议》，同意后下载并安装缺少的 Windows 组件。" +
-				"支持断点续传、镜像回落和 --json；darwin、linux 暂无组件清单。",
-			flags:  []flagSpec{optAcceptLicense, optKeepDownloads, optMirror, optMirrorURL, optConnectTO, optStallTO, optManifestTO, optTestFreeSpace},
-			maxPos: 1,
-			run:    runComponents, human: formatComponents,
+			details: "status（默认）查看组件，和 check 里的组件一样。fetch 做随包「补全组件.bat」做的事：" +
+				"先从镜像取《Android 软件开发套件许可协议》全文并显示，输入 y 同意才继续，否则什么也不下；" +
+				"再依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载缺少的 adb 和系统镜像（约 1.5 GB，中断了再运行会接着下），" +
+				"校验后装进 sdk\\。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
+				"--json 时必须给 --accept-license。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
+				"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
+				"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验也是 9（components_rejected）。",
+			flags:    fetchFlags,
+			posNames: []string{"status 或 fetch"}, maxPos: 1,
+			final: true,
+			run:   runComponents, human: formatComponents,
 		},
 		{
 			name: "window", args: "<i> show|hide", summary: "显示或隐藏实例的窗口",
@@ -381,9 +395,10 @@ type HelpResult struct {
 	all bool
 }
 
+// ComponentsStatusResult is `components status`: check's component list (emu.ComponentStatus, every field present).
 type ComponentsStatusResult struct {
-	Root       string                 `json:"root"`
-	Components []root.ComponentStatus `json:"components"`
+	Root       string                `json:"root"`
+	Components []emu.ComponentStatus `json:"components"`
 }
 
 // ---- request building (pure, tested directly) --------------------------------------------------------------------
@@ -892,59 +907,99 @@ func runComponents(c *cmdCtx) (any, error) {
 		action = strings.ToLower(c.inv.pos[0])
 	}
 	if action != "fetch" && action != "status" {
-		return nil, errs.Newf(errs.Usage, "只能是 fetch 或 status，收到「%s」", action).WithAdvice(findCommand("components").usageAdvice())
+		return nil, errs.Newf(errs.Usage, "只能是 status 或 fetch，收到「%s」", c.inv.pos[0]).WithAdvice(findCommand("components").usageAdvice())
+	}
+	if action == "status" {
+		var given []string
+		for _, f := range fetchFlags {
+			if c.inv.isSet(f.name) {
+				given = append(given, "--"+f.name)
+			}
+		}
+		if len(given) > 0 {
+			return nil, errs.Newf(errs.Usage, "%s 只用于 components fetch", strings.Join(given, "、")).
+				WithAdvice(findCommand("components").usageAdvice())
+		}
+		r, err := c.deps.resolveRoot(c.inv.root)
+		if err != nil {
+			return nil, err
+		}
+		return &ComponentsStatusResult{Root: r.Dir, Components: emu.ComponentStatuses(r.Components())}, nil
+	}
+	opt, err := fetchOptions(c)
+	if err != nil {
+		return nil, err
 	}
 	r, err := c.deps.resolveRoot(c.inv.root)
 	if err != nil {
 		return nil, err
 	}
-	if action == "status" {
-		return &ComponentsStatusResult{Root: r.Dir, Components: r.Components()}, nil
+	fetch := c.deps.fetchComponents
+	if fetch == nil {
+		fetch = components.Fetch
 	}
-	to := func(name string, d time.Duration) (time.Duration, error) {
-		if !c.inv.isSet(name) {
-			return d, nil
-		}
-		n := c.inv.intOpt(name)
-		if n <= 0 {
-			return 0, errs.Newf(errs.InvalidArgument, "--%s 要给大于 0 的秒数，收到 %d", name, n)
-		}
-		return time.Duration(n) * time.Second, nil
-	}
-	connect, err := to("connect-timeout", 20*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	stall, err := to("stall-timeout", 30*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	manifest, err := to("manifest-timeout", 40*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	free := int64(-1)
-	if c.inv.isSet("test-free-space-mb") {
-		n := c.inv.intOpt("test-free-space-mb")
-		if n < 0 {
-			return nil, errs.New(errs.InvalidArgument, "--test-free-space-mb 不能是负数")
-		}
-		free = int64(n)
-	}
-	var urls []string
-	if c.inv.isSet("mirror-url") {
-		urls = []string{c.inv.strOpt("mirror-url")}
-	}
-	result, err := components.Fetch(c.ctx, r, components.Options{
-		Root: r, AcceptLicense: c.inv.boolOpt("accept-license"), JSON: c.inv.json, Input: c.stdin,
-		KeepDownloads: c.inv.boolOpt("keep-downloads"), Mirror: c.inv.strOpt("mirror"), MirrorURLs: urls,
-		ConnectTimeout: connect, StallTimeout: stall, ManifestTimeout: manifest, TestFreeSpaceMB: free,
-		Progress: func(msg string) { c.log.Infof("%s", msg) }, License: func(text string) { c.log.Infof("%s", text) },
-	})
+	result, err := fetch(c.ctx, r, opt)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// fetchOptions checks every option of components fetch (before the root is looked up) and wires the output: the
+// script's messages and progress lines go to the log, progress at most every 2 s like update; the license text and
+// the question are written whatever the log level (raw on stderr, or one log line each with --json).
+func fetchOptions(c *cmdCtx) (components.Options, error) {
+	inv := c.inv
+	o := components.Options{
+		AcceptLicense: inv.boolOpt("accept-license"), JSON: inv.json, Input: c.stdin,
+		KeepDownloads: inv.boolOpt("keep-downloads"), Mirror: inv.strOpt("mirror"), MirrorURLs: inv.strsOpt("mirror-url"),
+		Log: c.log,
+	}
+	for _, t := range []struct {
+		name string
+		d    *time.Duration
+		max  time.Duration
+	}{
+		{"connect-timeout", &o.ConnectTimeout, components.MaxConnectTimeout},
+		{"stall-timeout", &o.StallTimeout, components.MaxStallTimeout},
+		{"manifest-timeout", &o.ManifestTimeout, components.MaxManifestTimeout},
+	} {
+		if !inv.isSet(t.name) {
+			continue
+		}
+		n := inv.intOpt(t.name)
+		if n < 1 || time.Duration(n)*time.Second > t.max {
+			return o, errs.Newf(errs.InvalidArgument, "--%s 要在 1–%.0f 秒之间，收到 %d", t.name, t.max.Seconds(), n)
+		}
+		*t.d = time.Duration(n) * time.Second
+	}
+	if inv.isSet("test-free-space-mb") {
+		n := int64(inv.intOpt("test-free-space-mb"))
+		if n < 0 {
+			return o, errs.New(errs.InvalidArgument, "--test-free-space-mb 不能是负数")
+		}
+		o.TestFreeSpaceMB = &n
+	}
+	if _, err := components.ChooseMirrors(o.Mirror, o.MirrorURLs); err != nil {
+		return o, err
+	}
+	var last time.Time
+	o.Progress = func(p components.Progress) {
+		if !p.Final && !last.IsZero() && time.Since(last) < 2*time.Second {
+			return
+		}
+		last = time.Now()
+		c.log.Infof("%s", p.Message)
+	}
+	unfiltered := logx.JSONSink(c.stderr, logx.Debug)
+	o.Notice = func(text string) {
+		if !inv.json {
+			fmt.Fprint(c.stderr, text)
+		} else if s := strings.Trim(text, "\n"); s != "" {
+			unfiltered(logx.Info, s)
+		}
+	}
+	return o, nil
 }
 
 func runWindow(c *cmdCtx) (any, error) {

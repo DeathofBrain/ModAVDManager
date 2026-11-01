@@ -4,11 +4,14 @@ package emu
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
+	"modavd/internal/avd"
 	"modavd/internal/errs"
 	"modavd/internal/jsonord"
 	"modavd/internal/win"
@@ -34,9 +37,13 @@ func TestBridgeStateWithoutGuest(t *testing.T) {
 	r := managerTestRoot(t, 1)
 	m := New(r, nil)
 	ctx := context.Background()
+	in, err := m.instance(1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	check := func(label string, initialized bool, want string) {
 		t.Helper()
-		if got := m.bridgeState(ctx, 1, false, initialized); got != want {
+		if got := m.bridgeState(ctx, 1, in.Config, false, initialized); got != want {
 			t.Errorf("%s: bridge = %q, want %q", label, got, want)
 		}
 	}
@@ -52,6 +59,75 @@ func TestBridgeStateWithoutGuest(t *testing.T) {
 	}
 	check("turned off", true, "off")
 	check("turned off before the first boot", false, "off")
+}
+
+// TestPollTakesGuestArchFromListedConfig: status / info / list decide whether the guest is arm64 (bridge off) from
+// the config.ini that avd.List already read with delete sharing, and open nothing of their own for it. A handle with
+// delete access on config.ini (what a delete holds) makes every open without FILE_SHARE_DELETE fail; the results must
+// be the same as without it.
+func TestPollTakesGuestArchFromListedConfig(t *testing.T) {
+	r := managerTestRoot(t, 1)
+	m := New(r, nil)
+	saved := qemuScan
+	qemuScan = func([]int) map[int]win.Process { return map[int]win.Process{} }
+	t.Cleanup(func() { qemuScan = saved })
+	ctx := context.Background()
+	cfgPath := avd.ConfigPath(r, 1)
+
+	poll := func(label string) (bridge string, out []byte) {
+		t.Helper()
+		info, err := m.Info(ctx, 1)
+		if err != nil {
+			t.Fatalf("%s: info: %v", label, err)
+		}
+		list, err := m.List(ctx)
+		if err != nil || len(list.Instances) != 1 {
+			t.Fatalf("%s: list: %+v %v", label, list, err)
+		}
+		a, _ := json.Marshal(info)
+		b, _ := json.Marshal(list.Instances[0])
+		if string(a) != string(b) {
+			t.Fatalf("%s: info and list differ:\n%s\n%s", label, a, b)
+		}
+		return info.Bridge, a
+	}
+	holdDelete := func() func() {
+		t.Helper()
+		p, _ := syscall.UTF16PtrFromString(cfgPath)
+		const deleteAccess = 0x00010000
+		h, err := syscall.CreateFile(p, deleteAccess,
+			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
+			syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			syscall.CloseHandle(h)
+			t.Fatal("os.ReadFile shares delete on this Go version: the test no longer shows anything")
+		}
+		return func() { syscall.CloseHandle(h) }
+	}
+
+	for _, c := range []struct{ name, cfg, want string }{
+		{"x86_64", "hw.cpu.ncore=4\r\nabi.type=x86_64\r\nhw.cpu.arch=x86_64\r\n", bridgeStatePending},
+		{"no arch keys", "hw.cpu.ncore=4\r\n", bridgeStatePending},
+		{"arm64-v8a", "hw.cpu.ncore=4\r\nabi.type=arm64-v8a\r\nhw.cpu.arch=arm64\r\n", bridgeStateOff},
+		{"aarch64, spaced", "hw.cpu.ncore=4\r\nhw.cpu.arch = AArch64 \r\n", bridgeStateOff},
+	} {
+		if err := os.WriteFile(cfgPath, []byte(c.cfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		bridge, free := poll(c.name)
+		if bridge != c.want {
+			t.Errorf("%s: bridge = %q, want %q", c.name, bridge, c.want)
+		}
+		release := holdDelete()
+		_, held := poll(c.name + ", delete handle held")
+		release()
+		if string(held) != string(free) {
+			t.Errorf("%s: with a delete handle on config.ini the poll says\n%s\nwithout\n%s", c.name, held, free)
+		}
+	}
 }
 
 // TestInstanceInfoStartedAtMS: started_at_ms is started_at's moment in Unix milliseconds; both empty when off.

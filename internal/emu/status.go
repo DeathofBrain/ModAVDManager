@@ -166,7 +166,7 @@ func (m *Manager) instanceInfo(ctx context.Context, in *avd.Instance, p *win.Pro
 		info.Renderer = metaText(meta.Get("renderer"))
 		info.SoftwareRenderer = metaTruthy(meta.Get("softwareRenderer"))
 	}
-	info.Bridge = m.bridgeState(ctx, i, info.Booted, info.Initialized)
+	info.Bridge = m.bridgeState(ctx, i, in.Config, info.Booted, info.Initialized)
 	return info
 }
 
@@ -210,9 +210,10 @@ const (
 // The boot marker stays for as long as the bridge is installed (it keeps the system writable), so on an instance that
 // is off or still booting the marker alone means "installed, or the last install failed": unknown. Pending there is
 // what a start would install for sure: no marker yet (it places one first), or the marker of an instance whose first
-// boot (which comes before the install) has not run.
-func (m *Manager) bridgeState(ctx context.Context, i int, booted, initialized bool) string {
-	if !m.bridgeWanted(i) {
+// boot (which comes before the install) has not run. cfg is the instance's config.ini as List read it: a poll opens no
+// file of its own for this (bridgeGuestSupported).
+func (m *Manager) bridgeState(ctx context.Context, i int, cfg *avd.Ini, booted, initialized bool) string {
+	if !m.bridgeWanted(i, cfg) {
 		return bridgeStateOff
 	}
 	if booted {

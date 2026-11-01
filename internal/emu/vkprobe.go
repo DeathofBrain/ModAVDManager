@@ -303,5 +303,3 @@ func vulkanItemFromProbe(r vkProbe) CheckItem {
 	}
 	return CheckItem{ID: "vulkan", Title: title, OK: checkOK(false), Reason: reason, Advice: vulkanAdvice}
 }
-
-// ---- parent side

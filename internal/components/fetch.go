@@ -1,30 +1,36 @@
-// Package components downloads the Google components which are intentionally
-// absent from a ModAVD release package.
+// Package components is `modavd components fetch`: it downloads and installs the Google components a ModAVD release
+// leaves out on purpose (adb and the Android 14 system image, root.SDKComponents), the way the package's
+// fetch-components.ps1 did, rule for rule. The Android SDK license from the mirror's repository2-3.xml is shown and
+// has to be accepted first. Mirrors are tried in order (googledownloads.cn, Tencent, dl.google.com). Zips download
+// into downloads\*.part, resume after an interruption, and are checked for size and SHA-1 before the rename; they
+// unpack into sdk\.staging\<id> and move into place only when complete. An old incomplete directory is set aside,
+// never deleted.
+//
+// It writes only downloads\, logs\fetch-components.log (and its .lock), the two component directories under sdk\ and
+// sdk\.staging\: no adb server, no registry, no administrator rights. Only Windows has a catalogue; darwin and linux
+// get errs.Unsupported before anything is read or written.
 package components
 
 import (
-	"archive/zip"
 	"bufio"
 	"context"
-	"crypto/sha1"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/xml"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
+	"modavd/internal/buildinfo"
 	"modavd/internal/errs"
+	"modavd/internal/logx"
 	"modavd/internal/root"
+	"modavd/internal/win"
 )
 
+// Mirror is one download source: a base URL the component paths are relative to.
 type Mirror struct {
 	ID, Name, Base string
 }
@@ -35,576 +41,499 @@ var defaultMirrors = []Mirror{
 	{ID: "google", Name: "Google 官方（dl.google.com）", Base: "https://dl.google.com/android/repository/"},
 }
 
-var fetchGOOS = runtime.GOOS
-var componentCatalogue = root.WindowsFetchComponents
+// Variables for tests: the host, the catalogue (the table check and components status read) and the free space of a
+// drive (DriveInfo.AvailableFreeSpace).
+var (
+	fetchGOOS          = runtime.GOOS
+	componentCatalogue = root.SDKComponents
+	diskFree           = win.DiskFree
+)
 
+// Defaults and limits of the three timeouts (the script's -ConnectTimeoutSec, -StallTimeoutSec, -ManifestTimeoutSec).
+const (
+	DefaultConnectTimeout  = 20 * time.Second
+	DefaultStallTimeout    = 30 * time.Second
+	DefaultManifestTimeout = 40 * time.Second
+	MaxConnectTimeout      = 600 * time.Second
+	MaxStallTimeout        = 600 * time.Second
+	MaxManifestTimeout     = 1800 * time.Second
+)
+
+// Options of a fetch.
 type Options struct {
-	Root            *root.Root
-	AcceptLicense   bool
-	JSON            bool
-	Input           io.Reader
-	KeepDownloads   bool
-	Mirror          string
-	MirrorURLs      []string
-	ConnectTimeout  time.Duration
-	StallTimeout    time.Duration
-	ManifestTimeout time.Duration
-	TestFreeSpaceMB int64
-	Progress        func(string)
-	License         func(string)
+	// AcceptLicense: do not ask (the script's -AcceptLicense, for automation). The license is still fetched and shown,
+	// and nothing is downloaded when it cannot be fetched.
+	AcceptLicense bool
+	// JSON: nobody can answer a question. Without AcceptLicense the fetch stops with errs.Usage before going online.
+	JSON bool
+	// Input is where the answer to the license question comes from (os.Stdin when nil).
+	Input io.Reader
+	// KeepDownloads keeps the zips in downloads\ after installing (deleted by default: 1.5 GB).
+	KeepDownloads bool
+	// Mirror keeps only that built-in mirror (googledownloads_cn / tencent / google, any case). MirrorURLs replace the
+	// built-in list, tried in order (each entry may hold several, comma-separated), and win over Mirror.
+	Mirror     string
+	MirrorURLs []string
+	// ConnectTimeout bounds connect, TLS handshake and response headers; StallTimeout a read that brings nothing;
+	// ManifestTimeout the whole license manifest. Zero is the default (20, 30, 40 s).
+	ConnectTimeout, StallTimeout, ManifestTimeout time.Duration
+	// TestFreeSpaceMB, when set, is taken as the free space of the root's drive (the script's -TestFreeSpaceMB, to
+	// show the "not enough space" refusal).
+	TestFreeSpaceMB *int64
+	// Log gets the script's messages (Info) and warnings (Warn); Progress the download and unpack progress (at most
+	// every 500 ms, plus a final report each); Notice what must be seen whatever the log level: the license text and
+	// the question (Log at Info when nil).
+	Log      *logx.Logger
+	Progress func(Progress)
+	Notice   func(text string)
 }
 
+// ComponentResult is one component after the fetch.
 type ComponentResult struct {
-	ID         string `json:"id"`
+	ID         string `json:"id"` // platform-tools / system-image
 	Name       string `json:"name"`
-	Version    string `json:"version"`
-	Installed  bool   `json:"installed"`
-	Downloaded bool   `json:"downloaded"`
-	Skipped    bool   `json:"skipped"`
+	Version    string `json:"version"`    // Pkg.Revision now in sdk\, "" when not installed
+	Installed  bool   `json:"installed"`  // complete now
+	Downloaded bool   `json:"downloaded"` // installed by this run
+	Skipped    bool   `json:"skipped"`    // was complete already
+	SetAside   string `json:"set_aside"`  // where the old incomplete directory went (sdk\...incomplete-<time>), "" when none
 }
 
+// Result of `components fetch`. Every field is always present.
 type Result struct {
 	Root          string            `json:"root"`
-	License       string            `json:"license"`
-	LicenseSource string            `json:"license_source"`
+	License       string            `json:"license"`        // the license text, "" when nothing had to be downloaded
+	LicenseSource string            `json:"license_source"` // the mirror it came from
 	Components    []ComponentResult `json:"components"`
-	Downloads     []string          `json:"downloads"`
-}
-
-type licenseDoc struct {
-	Licenses []struct {
-		ID   string `xml:"id,attr"`
-		Text string `xml:",chardata"`
-	} `xml:"license"`
+	Downloads     []string          `json:"downloads"` // zips this run left in downloads\ (only with KeepDownloads)
 }
 
 type fetcher struct {
 	r       *root.Root
 	o       Options
-	log     func(string)
-	client  *http.Client
+	sdk     string
 	mirrors []Mirror
+	client  *http.Client
+	logFile *os.File
+	where   string // what the run was doing, for the log when it fails (the script's $Where)
 }
 
+// CheckTimeouts fills in the defaults and checks the script's ranges (1-600 s, 1-600 s, 1-1800 s).
+func (o *Options) CheckTimeouts() error {
+	for _, t := range []struct {
+		d        *time.Duration
+		def, max time.Duration
+		flag     string
+	}{
+		{&o.ConnectTimeout, DefaultConnectTimeout, MaxConnectTimeout, "connect-timeout"},
+		{&o.StallTimeout, DefaultStallTimeout, MaxStallTimeout, "stall-timeout"},
+		{&o.ManifestTimeout, DefaultManifestTimeout, MaxManifestTimeout, "manifest-timeout"},
+	} {
+		if *t.d == 0 {
+			*t.d = t.def
+		}
+		if *t.d < 0 || *t.d > t.max {
+			return errs.Newf(errs.InvalidArgument, "--%s 要在 1–%s 秒之间，收到 %s", t.flag, seconds(t.max), seconds(*t.d))
+		}
+	}
+	return nil
+}
+
+// ChooseMirrors is the mirror list of a run: the built-in three in order, only the one named by mirror (any case), or
+// urls instead (each may hold several, comma-separated; a missing final "/" is added), which win over mirror. An
+// unknown mirror is refused even with urls (the script's ValidateSet). errs.InvalidArgument.
+func ChooseMirrors(mirror string, urls []string) ([]Mirror, error) {
+	list := append([]Mirror(nil), defaultMirrors...)
+	if mirror = strings.TrimSpace(mirror); mirror != "" {
+		list = nil
+		for _, m := range defaultMirrors {
+			if strings.EqualFold(m.ID, mirror) {
+				list = []Mirror{m}
+			}
+		}
+		if list == nil {
+			return nil, errs.Newf(errs.InvalidArgument, "没有叫 %s 的镜像（只能是 googledownloads_cn、tencent 或 google）", mirror)
+		}
+	}
+	if len(urls) == 0 {
+		return list, nil
+	}
+	var custom []Mirror
+	for _, raw := range urls {
+		for _, u := range strings.Split(raw, ",") {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			if l := strings.ToLower(u); !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
+				return nil, errs.Newf(errs.InvalidArgument, "--mirror-url 要写 http:// 或 https:// 开头的目录地址，收到「%s」", u)
+			}
+			if !strings.HasSuffix(u, "/") {
+				u += "/"
+			}
+			custom = append(custom, Mirror{ID: "custom", Name: "自定义镜像（" + u + "）", Base: u})
+		}
+	}
+	if len(custom) == 0 {
+		return nil, errs.New(errs.InvalidArgument, "--mirror-url 里没有地址")
+	}
+	return custom, nil
+}
+
+// Fetch downloads and installs the components of r that are not complete (see the package comment). Error codes:
+// Unsupported (no catalogue on this host), InvalidArgument (options), PrecheckFailed (a non-ASCII path, not enough
+// space), NotReady (not a ModAVD root, or sdkRoot set), Busy (another fetch runs), Usage (JSON without
+// AcceptLicense), LicenseDeclined, ComponentsUnavailable / ComponentsRejected (see errs), Canceled, Internal.
 func Fetch(ctx context.Context, r *root.Root, o Options) (*Result, error) {
 	if fetchGOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单")
+		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前只有 Windows 能补全组件")
 	}
 	if r == nil {
 		return nil, errs.New(errs.NotFound, "找不到魔改 AVD 根目录")
 	}
-	if o.ConnectTimeout <= 0 {
-		o.ConnectTimeout = 20 * time.Second
+	if err := o.CheckTimeouts(); err != nil {
+		return nil, err
 	}
-	if o.StallTimeout <= 0 {
-		o.StallTimeout = 30 * time.Second
+	mirrors, err := ChooseMirrors(o.Mirror, o.MirrorURLs)
+	if err != nil {
+		return nil, err
 	}
-	if o.ManifestTimeout <= 0 {
-		o.ManifestTimeout = 40 * time.Second
+	if o.Log == nil {
+		o.Log = logx.Nop()
 	}
-	f := &fetcher{r: r, o: o}
-	f.log = func(msg string) {
-		if o.Progress != nil {
-			o.Progress(msg)
+	f := &fetcher{r: r, o: o, sdk: r.SDK(), mirrors: mirrors}
+	return f.run(ctx)
+}
+
+func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
+	r := f.r
+	_, statErr := os.Stat(filepath.Join(f.sdk, "emulator", "emulator.exe"))
+	isRoot := statErr == nil
+	if isRoot {
+		// Only in a ModAVD root: a refused run elsewhere leaves no logs\ behind.
+		f.openLog()
+		defer f.closeLog()
+	}
+	var lock *win.FileLock
+	defer func() {
+		if err != nil {
+			f.failed(err, lock != nil)
 		}
-		logDir := filepath.Join(r.Dir, "logs")
-		if err := os.MkdirAll(logDir, 0o755); err == nil {
-			p := filepath.Join(logDir, "fetch-components.log")
-			f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-			if err == nil {
-				_, _ = fmt.Fprintf(f, "%s %s\r\n", time.Now().Format("2006-01-02 15:04:05"), msg)
-				_ = f.Close()
-			}
-		}
+		lock.Unlock()
+		f.note(fmt.Sprintf("退出码 %d", errs.ExitCode(err)))
+	}()
+	f.say("魔改 AVD：补全 Google 组件（adb、Android 14 系统镜像）")
+	f.say("文件夹：" + r.Dir)
+	free := "-1"
+	if f.o.TestFreeSpaceMB != nil {
+		free = fmt.Sprint(*f.o.TestFreeSpaceMB)
 	}
-	f.log("开始补全 Google 组件")
-	var mirrorErr error
-	f.mirrors, mirrorErr = chooseMirrors(o.Mirror, o.MirrorURLs)
-	if mirrorErr != nil {
-		return nil, errs.Wrap(errs.InvalidArgument, mirrorErr, mirrorErr.Error())
+	f.note(fmt.Sprintf("modavd %s，参数：AcceptLicense=%t Mirror=%s MirrorUrl=%s KeepDownloads=%t ConnectTimeoutSec=%s "+
+		"StallTimeoutSec=%s ManifestTimeoutSec=%s TestFreeSpaceMB=%s", buildinfo.Version, f.o.AcceptLicense, f.o.Mirror,
+		strings.Join(f.o.MirrorURLs, ","), f.o.KeepDownloads, seconds(f.o.ConnectTimeout), seconds(f.o.StallTimeout),
+		seconds(f.o.ManifestTimeout), free))
+
+	if !isASCII(r.Dir) {
+		return nil, errs.New(errs.PrecheckFailed, "这个文件夹的路径里有中文或其他非英文字符，模拟器在这种路径下起不来").
+			WithAdvice(`请把整个文件夹挪到只含英文、数字的路径下（例如 D:\ModAVD），再重新运行`)
 	}
-	if len(f.mirrors) == 0 {
-		return nil, errs.New(errs.InvalidArgument, "没有可用的镜像")
+	if !isRoot {
+		return nil, errs.Newf(errs.NotReady, `这里没有 sdk\emulator\emulator.exe，不像是魔改 AVD 的文件夹：%s`, r.Dir).
+			WithAdvice("请把 Release 压缩包完整解压后，在解压出来的文件夹里双击「补全组件.bat」")
 	}
-	if strings.IndexFunc(r.Dir, func(r rune) bool { return r > 0x7f }) >= 0 {
-		return nil, errs.New(errs.NotReady, "这个文件夹的路径里有中文或其他非英文字符，模拟器在这种路径下起不来")
+	if r.LocalSDKRoot() != "" {
+		// check and components status look at that SDK; fetch only ever writes this root's sdk\.
+		return nil, errs.New(errs.NotReady, "这个根目录在 mas-avd.json 里设了 sdkRoot（开发用的本地 SDK），不补全组件").
+			WithAdvice(`组件检查看的是那份 SDK；要给这个根目录的 sdk\ 补全组件，先去掉 sdkRoot`)
 	}
-	if _, err := os.Stat(filepath.Join(r.SDK(), "emulator", "emulator.exe")); err != nil {
-		return nil, errs.Newf(errs.NotReady, "这里没有 sdk\\emulator\\emulator.exe，不像是魔改 AVD 的文件夹：%s", r.Dir)
+	if lock, err = f.lock(); err != nil {
+		return nil, err
 	}
+	f.clearStaging()
+
 	specs := componentCatalogue()
-	result := &Result{Root: r.Dir, Components: []ComponentResult{}, Downloads: []string{}}
-	_ = os.RemoveAll(filepath.Join(r.SDK(), ".staging"))
-	var todo []root.FetchComponentSpec
+	res = &Result{Root: r.Dir, Components: []ComponentResult{}, Downloads: []string{}}
+	var todo []root.SDKComponent
 	for _, c := range specs {
-		cr := ComponentResult{ID: c.ID, Name: c.Name, Version: c.Version}
-		if installed(r, c) {
-			cr.Installed, cr.Skipped = true, true
-			result.Components = append(result.Components, cr)
-			f.log("已有：" + c.Name + "（版本 " + c.Version + "），跳过")
+		cr := ComponentResult{ID: c.ID, Name: c.FetchName}
+		if dir := c.Dir(f.sdk); c.Complete(dir) {
+			rev := root.Revision(dir)
+			shown := rev
+			if shown == "" {
+				shown = "未知"
+			}
+			f.say(fmt.Sprintf("已有：%s（版本 %s），跳过", c.FetchName, shown))
+			if rev != "" && !strings.EqualFold(rev, c.Version) {
+				f.warn(fmt.Sprintf("  注意：这个版本和本包测试过的 %s 不同", c.Version))
+			}
+			cr.Version, cr.Installed, cr.Skipped = rev, true, true
 		} else {
-			result.Components = append(result.Components, cr)
 			todo = append(todo, c)
 		}
+		res.Components = append(res.Components, cr)
 	}
 	if len(todo) == 0 {
-		return result, nil
+		f.say("组件都已齐全，不需要下载。完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+		return res, nil
+	}
+	if f.o.JSON && !f.o.AcceptLicense {
+		return nil, errs.New(errs.Usage, "--json 模式必须同时给 --accept-license，不能进入交互").
+			WithAdvice("先让用户看过并同意《Android 软件开发套件许可协议》，再带 --accept-license 运行")
 	}
 	if err := f.checkSpace(todo); err != nil {
 		return nil, err
 	}
-	license, source, err := f.license(ctx)
+
+	f.where = "获取许可协议"
+	text, from, err := f.license(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result.License, result.LicenseSource = license, source
-	if o.License != nil {
-		o.License(license)
-	} else {
-		f.log(license)
+	res.License, res.LicenseSource = text, from
+	if err := f.consent(text, from, todo); err != nil {
+		return nil, err
 	}
-	if o.JSON && !o.AcceptLicense {
-		return nil, errs.New(errs.Usage, "--json 模式必须同时给 --accept-license，不能进入交互")
-	}
-	if !o.AcceptLicense {
-		f.log("以上是 Google《Android 软件开发套件许可协议》全文。请输入 y 并回车表示同意：")
-		in := bufio.NewReader(o.Input)
-		if o.Input == nil {
-			in = bufio.NewReader(os.Stdin)
-		}
-		line, _ := in.ReadString('\n')
-		if !strings.EqualFold(strings.TrimSpace(line), "y") && !strings.EqualFold(strings.TrimSpace(line), "yes") {
-			return nil, errs.New(errs.Usage, "没有同意许可协议，已退出，什么也没有下载")
-		}
-	}
-	if err := os.MkdirAll(filepath.Join(r.Dir, "downloads"), 0o755); err != nil {
-		return nil, errs.Wrap(errs.Internal, err, "建不了 downloads 目录")
-	}
-	licensePath := filepath.Join(r.Dir, "downloads", "android-sdk-license.txt")
-	if err := os.WriteFile(licensePath, []byte(strings.ReplaceAll(license, "\n", "\r\n")+"\r\n"), 0o644); err != nil {
-		return nil, errs.Wrap(errs.Internal, err, "保存许可协议失败")
-	}
+
 	for _, c := range todo {
-		f.log(fmt.Sprintf("—— %s（%d）", c.Name, c.Size))
-		zipPath, err := f.download(ctx, c)
+		if ctx.Err() != nil {
+			return nil, canceled(ctx)
+		}
+		f.say(fmt.Sprintf("—— %s（%s）", c.FetchName, formatSize(float64(c.Size))))
+		zipFile, err := f.download(ctx, c)
 		if err != nil {
 			return nil, err
 		}
-		if err := f.install(c, zipPath); err != nil {
+		f.say("  解压安装…")
+		aside, err := f.install(ctx, c, zipFile)
+		if err != nil {
 			return nil, err
 		}
-		for j := range result.Components {
-			if result.Components[j].ID == c.ID {
-				result.Components[j] = ComponentResult{ID: c.ID, Name: c.Name, Version: c.Version, Installed: true, Downloaded: true}
-				break
+		f.say(`  已装好：sdk\` + c.Target)
+		if f.o.KeepDownloads {
+			res.Downloads = append(res.Downloads, filepath.Base(zipFile))
+		} else if err := os.Remove(zipFile); err == nil {
+			f.note("  已删除下载的 " + zipFile)
+		}
+		for k := range res.Components {
+			if res.Components[k].ID == c.ID {
+				res.Components[k] = ComponentResult{ID: c.ID, Name: c.FetchName, Version: root.Revision(c.Dir(f.sdk)),
+					Installed: true, Downloaded: true, SetAside: setAsideRel(f.sdk, aside)}
 			}
 		}
-		result.Downloads = append(result.Downloads, filepath.Base(zipPath))
-		if !o.KeepDownloads {
-			_ = os.Remove(zipPath)
+	}
+	if onlyLicenseLeft(filepath.Join(r.Dir, "downloads")) {
+		f.note(`  downloads\ 里只剩许可协议副本`)
+	}
+	f.where = "最后检查"
+	for _, c := range specs {
+		if !c.Complete(c.Dir(f.sdk)) {
+			return nil, rejected("检查发现 %s 仍不完整", c.FetchName)
 		}
 	}
-	return result, nil
+	f.say("完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+	return res, nil
 }
 
-func chooseMirrors(one string, urls []string) ([]Mirror, error) {
-	if len(urls) > 0 {
-		var out []Mirror
-		for _, raw := range urls {
-			for _, u := range strings.Split(raw, ",") {
-				u = strings.TrimSpace(u)
-				if u == "" {
-					continue
-				}
-				if !strings.HasSuffix(u, "/") {
-					u += "/"
-				}
-				out = append(out, Mirror{ID: "custom", Name: "自定义镜像（" + u + "）", Base: u})
-			}
-		}
-		return out, nil
+// setAsideRel is sdk\<relative> for the result, "" for "".
+func setAsideRel(sdk, p string) string {
+	if p == "" {
+		return ""
 	}
-	if one == "" {
-		return append([]Mirror(nil), defaultMirrors...), nil
+	if rel, err := filepath.Rel(sdk, p); err == nil {
+		return filepath.Join(root.SDKDir, rel)
 	}
-	for _, m := range defaultMirrors {
-		if m.ID == one {
-			return []Mirror{m}, nil
-		}
-	}
-	return nil, fmt.Errorf("未知镜像 %s", one)
+	return p
 }
 
-func (f *fetcher) httpClient() *http.Client {
-	if f.client != nil {
-		return f.client
-	}
-	dialer := &net.Dialer{Timeout: f.o.ConnectTimeout}
-	tr := &http.Transport{DialContext: dialer.DialContext, ResponseHeaderTimeout: f.o.ConnectTimeout, DisableCompression: true}
-	f.client = &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error { return nil }}
-	return f.client
-}
-
-func (f *fetcher) request(ctx context.Context, method, url string, timeout time.Duration, offset int64) (*http.Response, error) {
-	_ = timeout // connection and response-header limits are enforced by the transport
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("User-Agent", "ModAVD-components/1.0")
-	if offset > 0 {
-		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
-	}
-	resp, err := f.httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
-		resp.Body.Close()
-		return nil, fmt.Errorf("服务器返回了压缩过的内容（Content-Encoding: %s）", ce)
-	}
-	return resp, nil
-}
-
-func readStall(ctx context.Context, body io.Reader, stall time.Duration) ([]byte, error) {
-	buf := make([]byte, 1<<20)
-	type rr struct {
-		n   int
-		err error
-	}
-	ch := make(chan rr, 1)
-	go func() { n, err := body.Read(buf); ch <- rr{n, err} }()
-	t := time.NewTimer(stall)
-	select {
-	case <-ctx.Done():
-		t.Stop()
-		return nil, ctx.Err()
-	case <-t.C:
-		return nil, fmt.Errorf("下载卡住超过 %s", stall)
-	case r := <-ch:
-		t.Stop()
-		if r.n > 0 {
-			return append([]byte(nil), buf[:r.n]...), r.err
-		}
-		return nil, r.err
-	}
-}
-
-func (f *fetcher) license(ctx context.Context) (string, string, error) {
-	var errsSeen []string
-	for _, m := range f.mirrors {
-		licenseCtx, cancel := context.WithTimeout(ctx, f.o.ManifestTimeout)
-		resp, err := f.request(licenseCtx, http.MethodGet, m.Base+"repository2-3.xml", f.o.ManifestTimeout, 0)
-		if err != nil {
-			cancel()
-			errsSeen = append(errsSeen, m.Name+"："+err.Error())
-			continue
-		}
-		var b []byte
-		for {
-			chunk, readErr := readStall(licenseCtx, resp.Body, f.o.StallTimeout)
-			if len(chunk) > 0 {
-				b = append(b, chunk...)
-			}
-			if readErr == io.EOF {
-				break
-			}
-			if readErr != nil {
-				err = readErr
-				break
-			}
-		}
-		resp.Body.Close()
-		cancel()
-		if err != nil {
-			errsSeen = append(errsSeen, m.Name+"："+err.Error())
-			continue
-		}
-		var doc licenseDoc
-		if err := xml.Unmarshal(b, &doc); err != nil {
-			errsSeen = append(errsSeen, m.Name+"："+err.Error())
-			continue
-		}
-		for _, l := range doc.Licenses {
-			if l.ID == "android-sdk-license" && strings.TrimSpace(l.Text) != "" {
-				return strings.TrimSpace(l.Text), m.Name, nil
-			}
-		}
-		errsSeen = append(errsSeen, m.Name+"：清单里没有 android-sdk-license")
-	}
-	return "", "", errs.Wrap(errs.UpdateUnavailable, fmt.Errorf("%s", strings.Join(errsSeen, "；")), "取不到《Android 软件开发套件许可协议》全文，什么也没有下载")
-}
-
-func (f *fetcher) checkSpace(todo []root.FetchComponentSpec) error {
-	need := int64(500 << 20)
-	for _, c := range todo {
-		zip := filepath.Join(f.r.Dir, "downloads", filepath.Base(c.URL))
-		have := int64(0)
-		if st, err := os.Stat(zip); err == nil {
-			have = st.Size()
-		} else if st, err := os.Stat(zip + ".part"); err == nil {
-			have = st.Size()
-		}
-		if left := c.Size - have; left > 0 {
-			need += left
-		}
-		need += c.ExtractedBytes
-	}
-	free := int64(0)
-	if f.o.TestFreeSpaceMB >= 0 {
-		free = f.o.TestFreeSpaceMB << 20
-	} else if st, err := os.Stat(f.r.Dir); err == nil {
-		_ = st
-		free = diskFree(f.r.Dir)
-	}
-	if free > 0 && free < need {
-		return errs.Newf(errs.NotReady, "磁盘空间不够：还需要约 %d MB，当前可用约 %d MB", need>>20, free>>20)
-	}
-	return nil
-}
-
-func installed(r *root.Root, c root.FetchComponentSpec) bool {
-	dir := filepath.Join(r.SDK(), c.Target)
-	for _, name := range c.KeyFiles {
-		st, err := os.Stat(filepath.Join(dir, name))
-		if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
-			return false
-		}
-	}
-	props, err := os.ReadFile(filepath.Join(dir, "source.properties"))
+func onlyLicenseLeft(dir string) bool {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(props), "Pkg.Revision="+c.Version)
+	for _, e := range entries {
+		if e.Name() != licenseFile {
+			return false
+		}
+	}
+	return true
 }
 
-func (f *fetcher) download(ctx context.Context, c root.FetchComponentSpec) (string, error) {
-	dir := filepath.Join(f.r.Dir, "downloads")
-	_ = os.MkdirAll(dir, 0o755)
-	zipPath := filepath.Join(dir, filepath.Base(c.URL))
-	part := zipPath + ".part"
-	if st, err := os.Stat(zipPath); err == nil && st.Size() == c.Size {
-		if sha1File(zipPath) == c.SHA1 {
-			return zipPath, nil
-		}
-		_ = os.Remove(zipPath)
-	}
-	var failures []string
-	for _, m := range f.mirrors {
-		for attempt := 0; attempt < 3; attempt++ {
-			if err := f.downloadOne(ctx, m.Base+c.URL, part, c.Size); err != nil {
-				failures = append(failures, m.Name+"："+err.Error())
-				continue
-			}
-			if sha := sha1File(part); sha != c.SHA1 {
-				_ = os.Remove(part)
-				failures = append(failures, m.Name+"：SHA-1 "+sha)
-				break
-			}
-			if err := os.Rename(part, zipPath); err != nil {
-				return "", errs.Wrap(errs.Internal, err, "保存下载文件失败")
-			}
-			return zipPath, nil
+func isASCII(s string) bool {
+	for k := 0; k < len(s); k++ {
+		if s[k] >= 0x80 {
+			return false
 		}
 	}
-	return "", errs.Wrap(errs.UpdateRejected, fmt.Errorf("%s", strings.Join(failures, "；")), "所有镜像都没下成或校验不通过")
+	return true
 }
 
-func (f *fetcher) downloadOne(ctx context.Context, url, part string, expected int64) error {
-	existing := int64(0)
-	if st, err := os.Stat(part); err == nil {
-		existing = st.Size()
-		if existing > expected {
-			_ = os.Remove(part)
-			existing = 0
-		}
-	}
-	resp, err := f.request(ctx, http.MethodGet, url, f.o.ConnectTimeout+f.o.StallTimeout+time.Hour, existing)
+// lock is logs\fetch-components.lock: one fetch per root at a time (update does the same with .update\modavd.lock).
+// Only its holder clears sdk\.staging, where another run could be unpacking. The system drops it when the process
+// ends.
+func (f *fetcher) lock() (*win.FileLock, error) {
+	p := filepath.Join(f.r.LogsDir(), "fetch-components.lock")
+	l, ok, err := win.TryLock(p)
 	if err != nil {
-		return err
+		return nil, errs.Wrap(errs.Internal, err, "补全组件的锁文件打不开: "+p)
 	}
-	defer resp.Body.Close()
-	mode := os.O_CREATE | os.O_WRONLY
-	start := existing
-	if existing > 0 && resp.StatusCode == http.StatusPartialContent && strings.HasPrefix(resp.Header.Get("Content-Range"), "bytes "+strconv.FormatInt(existing, 10)+"-") {
-		mode |= os.O_APPEND
+	if !ok {
+		return nil, errs.New(errs.Busy, "这个文件夹正在补全组件").WithAdvice("另一个 modavd components fetch 还没做完，等它做完再运行")
+	}
+	return l, nil
+}
+
+// checkSpace: the downloads still to come (less what downloads\ holds) plus the unpacked sizes plus 500 MB must fit
+// on the root's drive. A free space that cannot be read stops the run, as in the script.
+func (f *fetcher) checkSpace(todo []root.SDKComponent) error {
+	need := int64(500 << 20)
+	for _, c := range todo {
+		zipFile := f.zipPath(c)
+		have := int64(0)
+		if st, err := os.Stat(zipFile); err == nil {
+			have = st.Size()
+		} else if st, err := os.Stat(zipFile + ".part"); err == nil {
+			have = st.Size()
+		}
+		need += max(0, c.Size-have) + c.ExtractedBytes
+	}
+	drive := filepath.VolumeName(f.r.Dir) + `\`
+	f.where = "查 " + drive + " 的剩余空间"
+	freeBytes, err := diskFree(f.r.Dir)
+	if err != nil {
+		return errs.Wrap(errs.Internal, err, fmt.Sprintf("查不了 %s 的剩余空间：%s", drive, errs.As(err).Message))
+	}
+	free := int64(min(freeBytes, 1<<62))
+	if mb := f.o.TestFreeSpaceMB; mb != nil {
+		free = clampMB(*mb)
+		f.note(fmt.Sprintf("  （测试：假装只剩 %d MB）", *mb))
+	}
+	if free < need {
+		return errs.Newf(errs.PrecheckFailed, "磁盘空间不够：还需要约 %s，%s 只剩 %s", formatSize(float64(need)), drive, formatSize(float64(free))).
+			WithAdvice("游戏数据以后也放在这个文件夹里，请换一个空间更大的盘")
+	}
+	return nil
+}
+
+const licenseFile = "android-sdk-license.txt"
+
+// consent shows the license and its source and asks for y (yes) unless AcceptLicense. Only after that is the copy in
+// downloads\ written: a refusal leaves no file there.
+func (f *fetcher) consent(text, from string, todo []root.SDKComponent) error {
+	f.notice("\n================ Android Software Development Kit License Agreement ================\n" + text +
+		"\n=====================================================================================\n\n")
+	names := make([]string, len(todo))
+	for k, c := range todo {
+		names[k] = c.FetchName
+	}
+	shown := fmt.Sprintf("以上是 Google《Android 软件开发套件许可协议》全文（取自 %s）。", from)
+	terms := fmt.Sprintf("接下来要下载的 %s 由 Google 提供、受这份协议约束，本项目不分发它们。", strings.Join(names, "、"))
+	f.notice(shown + "\n" + terms + "\n")
+	f.note(shown)
+	f.note(terms)
+	if f.o.AcceptLicense {
+		f.say("已通过 --accept-license 同意许可协议。")
 	} else {
-		mode |= os.O_TRUNC
-		start = 0
+		f.notice("是否同意这份许可协议？输入 y 并回车表示同意，直接回车或输入其他内容则退出：")
+		in := f.o.Input
+		if in == nil {
+			in = os.Stdin
+		}
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		answer := strings.TrimRight(line, "\r\n")
+		f.note("用户输入：" + answer)
+		if a := strings.TrimSpace(answer); !strings.EqualFold(a, "y") && !strings.EqualFold(a, "yes") {
+			f.notice("\n")
+			return errs.New(errs.LicenseDeclined, "没有同意许可协议，已退出，什么也没有下载")
+		}
+		f.say("已同意许可协议。")
 	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("服务器返回 HTTP %d", resp.StatusCode)
+	dir := filepath.Join(f.r.Dir, "downloads")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return errs.Wrap(errs.Internal, err, "建不了 downloads 目录："+err.Error())
 	}
-	fh, err := os.OpenFile(part, mode, 0o644)
-	if err != nil {
-		return err
+	p := filepath.Join(dir, licenseFile)
+	copyText := strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n") + "\r\n"
+	if err := os.WriteFile(p, append([]byte("\xef\xbb\xbf"), copyText...), 0o644); err != nil {
+		return errs.Wrap(errs.Internal, err, "保存许可协议失败："+err.Error())
 	}
-	defer fh.Close()
-	ctx2, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := start
-	for {
-		b, readErr := readStall(ctx2, resp.Body, f.o.StallTimeout)
-		if len(b) > 0 {
-			if _, err := fh.Write(b); err != nil {
-				return err
-			}
-			done += int64(len(b))
-			f.log(fmt.Sprintf("下载 %s：%d / %d", filepath.Base(part), done, expected))
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-		if len(b) == 0 {
-			break
-		}
-		if done >= expected {
-			break
-		}
-	}
-	if done != expected {
-		return fmt.Errorf("下载不完整：应为 %d 字节，实际 %d 字节", expected, done)
-	}
-	return fh.Sync()
-}
-
-func sha1File(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	h := sha1.New()
-	_, _ = io.Copy(h, f)
-	return hex.EncodeToString(h.Sum(nil))
-}
-func sha256File(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	h := sha256.New()
-	_, _ = io.Copy(h, f)
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func (f *fetcher) install(c root.FetchComponentSpec, zipPath string) error {
-	stageRoot := filepath.Join(f.r.SDK(), ".staging", c.ID)
-	_ = os.RemoveAll(stageRoot)
-	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
-		return err
-	}
-	defer os.RemoveAll(stageRoot)
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return errs.Wrap(errs.UpdateRejected, err, "压缩包打不开")
-	}
-	defer r.Close()
-	prefix := strings.Trim(c.ArchiveRoot, "/") + "/"
-	rootDir := filepath.Clean(stageRoot)
-	for _, e := range r.File {
-		name := strings.ReplaceAll(e.Name, "\\", "/")
-		if !strings.HasPrefix(name, prefix) {
-			return errs.Newf(errs.UpdateRejected, "压缩包结构不对：条目 %s 不在 %s 下", e.Name, prefix)
-		}
-		rel := name
-		if rel == prefix {
-			continue
-		}
-		dest := filepath.Join(stageRoot, filepath.FromSlash(rel))
-		clean, _ := filepath.Abs(dest)
-		base, _ := filepath.Abs(rootDir)
-		if clean != base && !strings.HasPrefix(clean, base+string(os.PathSeparator)) {
-			return errs.Newf(errs.UpdateRejected, "压缩包里有非法路径：%s", e.Name)
-		}
-		if e.FileInfo().IsDir() {
-			if err := os.MkdirAll(dest, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return err
-		}
-		in, err := e.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			in.Close()
-			return err
-		}
-		_, cpErr := io.Copy(out, in)
-		_ = in.Close()
-		closeErr := out.Close()
-		if cpErr != nil {
-			return cpErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	extracted := filepath.Join(stageRoot, filepath.FromSlash(c.ArchiveRoot))
-	if err := validateExtracted(c, extracted); err != nil {
-		return err
-	}
-	target := filepath.Join(f.r.SDK(), c.Target)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	backup := target + ".components-old"
-	_ = os.RemoveAll(backup)
-	backedUp := false
-	if _, err := os.Stat(target); err == nil {
-		if err := os.Rename(target, backup); err != nil {
-			return err
-		}
-		backedUp = true
-		defer os.RemoveAll(backup)
-	}
-	if err := os.Rename(extracted, target); err != nil {
-		if backedUp {
-			_ = os.Rename(backup, target)
-		}
-		return err
-	}
-	if !installed(f.r, c) {
-		_ = os.RemoveAll(target)
-		if backedUp {
-			_ = os.Rename(backup, target)
-		}
-		return errs.Newf(errs.UpdateRejected, "装完后 %s 仍缺关键文件", c.Name)
-	}
+	f.say("许可协议另存了一份在：" + p)
 	return nil
 }
 
-func validateExtracted(c root.FetchComponentSpec, dir string) error {
-	for _, n := range c.KeyFiles {
-		st, err := os.Stat(filepath.Join(dir, n))
-		if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
-			return fmt.Errorf("压缩包里缺少 %s", n)
+// ---- messages and the log file -----------------------------------------------------------------------------------
+
+func (f *fetcher) openLog() {
+	dir := f.r.LogsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f.logFile, _ = os.OpenFile(filepath.Join(dir, "fetch-components.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+}
+
+func (f *fetcher) closeLog() {
+	if f.logFile != nil {
+		f.logFile.Close()
+		f.logFile = nil
+	}
+}
+
+// note is one line in logs\fetch-components.log only (the script's Write-Log): "yyyy-MM-dd HH:mm:ss text", CRLF,
+// UTF-8 without BOM. A log that cannot be written is ignored, as there.
+func (f *fetcher) note(text string) {
+	if f.logFile != nil {
+		fmt.Fprintf(f.logFile, "%s %s\r\n", time.Now().Format("2006-01-02 15:04:05"), text)
+	}
+}
+
+// say is the script's Say: shown and logged. warn is its yellow Say.
+func (f *fetcher) say(text string) {
+	f.o.Log.Infof("%s", text)
+	f.note(text)
+}
+
+func (f *fetcher) warn(text string) {
+	f.o.Log.Warnf("%s", text)
+	f.note(text)
+}
+
+// notice is shown whatever the log level and not logged (the script's Write-Host of the license).
+func (f *fetcher) notice(text string) {
+	if f.o.Notice != nil {
+		f.o.Notice(text)
+		return
+	}
+	if s := strings.TrimSpace(text); s != "" {
+		f.o.Log.Infof("%s", s)
+	}
+}
+
+// failed is the script's catch: where it stopped and why go to the log; the user hears that what was downloaded is
+// kept and where the log is; sdk\.staging is cleared again when this run holds the lock.
+func (f *fetcher) failed(err error, locked bool) {
+	if f.where != "" {
+		f.note("失败：" + f.where)
+	}
+	f.note("原因：" + errs.As(err).Error())
+	if locked {
+		if hasPartialDownloads(filepath.Join(f.r.Dir, "downloads")) {
+			f.say(`已下载的部分保存在 downloads\ 里，再次运行会接着下。sdk\ 里没有留下装到一半的目录。`)
+		}
+		f.clearStaging()
+	}
+	if f.logFile != nil {
+		f.say("详细记录：" + f.logFile.Name())
+	}
+}
+
+func hasPartialDownloads(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if n := strings.ToLower(e.Name()); strings.HasSuffix(n, ".part") || strings.HasSuffix(n, ".zip") {
+			return true
 		}
 	}
-	props := filepath.Join(dir, "source.properties")
-	if _, err := os.Stat(props); os.IsNotExist(err) {
-		if err := os.WriteFile(props, []byte(c.Properties), 0o644); err != nil {
-			return err
-		}
-	}
-	data, _ := os.ReadFile(props)
-	if !strings.Contains(string(data), "Pkg.Revision="+c.Version) {
-		return fmt.Errorf("source.properties 版本不对")
-	}
-	for name, want := range c.KeyHashes {
-		if got := sha256File(filepath.Join(dir, name)); !strings.EqualFold(got, want) {
-			return fmt.Errorf("关键文件 %s 的 SHA-256 不对", name)
-		}
-	}
-	return nil
+	return false
 }

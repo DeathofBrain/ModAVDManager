@@ -65,6 +65,9 @@ var stopOpsOf = (*Manager).stopOpsFor
 // whose start has not launched qemu yet is errs.Busy (see waitStartingQemu). errs.Internal when Windows refuses to
 // end qemu (see qemuNotEnded).
 func (m *Manager) Stop(ctx context.Context, i int, opt StopOptions) (*StopResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	in, err := m.instance(i)
 	if err != nil {
 		return nil, err
