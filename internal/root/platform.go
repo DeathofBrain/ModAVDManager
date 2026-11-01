@@ -12,9 +12,7 @@ func platformKeyFiles() map[string][]string {
 		qemu = "qemu/" + p.QEMU
 	}
 	return map[string][]string{
-		"platform-tools": {p.ADB},
-		"emulator":       {p.Emulator, qemu},
-		"system-image":   {"system.img", "vendor.img", "kernel-ranchu", "ramdisk.img"},
+		"emulator": {p.Emulator, qemu},
 	}
 }
 

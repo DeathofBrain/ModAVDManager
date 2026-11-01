@@ -74,17 +74,24 @@ func (m *Manager) Check(ctx context.Context, opt CheckOptions) (*CheckResult, er
 		m.diskItemNow(),
 		memoryItemNow(memoryMB),
 	}
-	res := &CheckResult{RootInfo: m.rootInfo(), Ready: true, Items: items, Components: []ComponentStatus{}}
+	res := &CheckResult{RootInfo: m.rootInfo(), Ready: true, Items: items, Components: ComponentStatuses(comps)}
 	if _, failed := firstBlockingFailure(items); failed {
 		res.Ready = false
 	}
+	return res, nil
+}
+
+// ComponentStatuses is root's component list in the JSON shape of check's "components" (every field always present),
+// which `components status` returns too. Never nil.
+func ComponentStatuses(comps []root.ComponentStatus) []ComponentStatus {
+	out := []ComponentStatus{}
 	for _, c := range comps {
-		res.Components = append(res.Components, ComponentStatus{
+		out = append(out, ComponentStatus{
 			ID: c.ID, Name: c.Name, Version: c.Version, Build: c.Build,
 			Installed: c.Installed, Optional: c.Optional, LocalSDK: c.LocalSDK,
 		})
 	}
-	return res, nil
+	return out
 }
 
 // precheckBeforeLaunch: the blocking checks before a boot (path, components, emulator, acceleration, memory against

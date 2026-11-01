@@ -18,6 +18,10 @@
 //	stop --all [--force]                                  StopAllResult {"results":[StopResult],"failed":[{index,error}]}
 //	restart <i> [--window] [--timeout 300] [--force]      emu.StartResult (stop, wait for qemu to exit, then start)
 //	check [--memory M]                                    emu.CheckResult (exit 0 even when not ready: see "ready")
+//	components [status]                                   ComponentsStatusResult {"root","components":[emu.ComponentStatus]}
+//	components fetch [--accept-license] [--mirror ID] [--mirror-url URL]... [--keep-downloads]   components.Result
+//	report-config [--no-clipboard]                        read-only configuration and installed-game report
+//	collect-info [--out-dir D] [--stage-dir D] ...        read-only diagnostics zip
 //	window <i> show|hide                                  emu.WindowResult
 //	install <i> <apk>                                     emu.InstallResult
 //	shell <i> [--timeout S] <command...>                  emu.ShellResult
@@ -38,16 +42,17 @@
 // error). adb and mcp never print an envelope (their stdout belongs to adb / the protocol): their errors go to
 // stderr only.
 //
-// Exit codes are errs.ExitCode (0 ok, 1 internal, 2 usage / invalid argument, 3 not found, 4 not ready / precheck
-// failed / unsupported, 5 busy / already exists / port conflict, 6 timeout, 7 launch failed, 8 canceled, 9 update
-// unavailable / rejected), except:
+// Exit codes are errs.ExitCode (0 ok, 1 internal, 2 usage / invalid argument / license declined, 3 not found, 4 not
+// ready / precheck failed / unsupported, 5 busy / already exists / port conflict, 6 timeout, 7 launch failed, 8
+// canceled, 9 update or components unavailable / rejected), except:
 // shell without --json exits with the guest command's exit code, adb with adb's, and stop --all with the code of its
 // first failure (its envelope still says ok and lists both results and failed). Ctrl+C cancels the context
 // (errs.Canceled); an emulator that was already launched keeps running (emu guarantees that). A run during which the
 // context ended fails with errs.Canceled even when the command returned a result, unless the command is final (its
-// result reports a change that was made: create, set, delete, start, stop, restart, window, install; or does not
-// depend on the context: version, help): a query whose adb calls were killed half way would report what it saw by
-// then, an online instance as starting.
+// result reports a change that was made: create, set, delete, start, stop, restart, window, install, components fetch;
+// or does not depend on the context: version, help, components status): a query whose adb calls were killed half way
+// would report what it saw by then, an online instance as starting. components fetch stops at Ctrl+C with
+// errs.Canceled itself, between two reads of a download or an unpack and before the next component.
 //
 // Before Main returns, a command that used a manager waits up to backgroundWait for the manager's background work
 // (emu.Manager.Wait: the logcat restart after a re-registration), after its output is written.
@@ -65,6 +70,7 @@ import (
 	"syscall"
 	"time"
 
+	"modavd/internal/components"
 	"modavd/internal/emu"
 	"modavd/internal/errs"
 	"modavd/internal/logx"
@@ -105,9 +111,10 @@ var _ manager = (*emu.Manager)(nil)
 
 // deps are the outside world of a command run, replaced in tests.
 type deps struct {
-	newManager  func(rootFlag string, log *logx.Logger) (manager, error)
-	resolveRoot func(flag string) (*root.Root, error)
-	serveMCP    func(ctx context.Context, in io.Reader, out io.Writer, opt mcp.Options) error
+	newManager      func(rootFlag string, log *logx.Logger) (manager, error)
+	resolveRoot     func(flag string) (*root.Root, error)
+	serveMCP        func(ctx context.Context, in io.Reader, out io.Writer, opt mcp.Options) error
+	fetchComponents func(ctx context.Context, r *root.Root, opt components.Options) (*components.Result, error)
 }
 
 func defaultDeps() deps {
@@ -119,8 +126,9 @@ func defaultDeps() deps {
 			}
 			return emu.New(r, log), nil
 		},
-		resolveRoot: root.Resolve,
-		serveMCP:    mcp.Serve,
+		resolveRoot:     root.Resolve,
+		serveMCP:        mcp.Serve,
+		fetchComponents: components.Fetch,
 	}
 }
 
