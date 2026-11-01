@@ -269,7 +269,7 @@ func newFixture(t *testing.T, name, base, rootRel string) *fixture {
 }
 
 // shortEnv is an environment value "<dir>\rest" of a scenario: dir (directly under base) by its 8.3 short name, the
-// way %TEMP% is C:\Users\ADMINI~1\AppData\Local\Temp while %LOCALAPPDATA% is C:\Users\Administrator\AppData\Local.
+// way %TEMP% is the 8.3 short form (PROFIL~1 style) of %LOCALAPPDATA%\Temp.
 var shortEnv = regexp.MustCompile(`^<([^>]+)>(.*)$`)
 
 // getenv is the scenario's environment (LOCALAPPDATA, TEMP under base).

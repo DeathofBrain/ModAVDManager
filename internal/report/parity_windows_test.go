@@ -24,7 +24,7 @@ import (
 // (testdata/golden, written by testdata/gen_golden.ps1 from the scripts themselves).
 
 // testTempDir is a fresh directory, removed afterwards: under $MODAVD_TEST_TMP\report when that is set, otherwise
-// t.TempDir(). Its 8.3 short names are expanded (%TEMP% is C:\Users\RUNNER~1\... on GitHub's runners), as the
+// t.TempDir(). Its 8.3 short names are expanded (%TEMP% is an 8.3 short name on GitHub's runners), as the
 // scripts' [IO.Path]::GetFullPath expands them in the paths they print.
 func testTempDir(t *testing.T) string {
 	t.Helper()

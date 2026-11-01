@@ -9,7 +9,7 @@
     "<name>Err makes that query fail with the message; limits lower the script's $LogCapBytes, $MasLogTailBytes and",
     "$DumpMaxBytes.",
     "env: paths under {{BASE}}; '<dir>\\rest' names dir (directly under {{BASE}}) by its 8.3 short name, the way %TEMP%",
-    "is C:\\Users\\ADMINI~1\\AppData\\Local\\Temp while %LOCALAPPDATA% is C:\\Users\\Administrator\\AppData\\Local (only on a",
+    "is the 8.3 short form (PROFIL~1 style) of %LOCALAPPDATA%\\Temp (only on a",
     "volume that makes 8.3 names: gen_golden.ps1 fails elsewhere, the tests skip the scenario)."
   ],
   "full": {

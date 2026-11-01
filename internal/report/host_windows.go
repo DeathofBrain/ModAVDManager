@@ -751,7 +751,7 @@ func isHidden(fi fs.FileInfo) bool {
 
 // longPath is an existing path with its 8.3 short names expanded, as [IO.Path]::GetFullPath of Windows PowerShell
 // 5.1 gives it: GetLongPathNameW, only when the path has a '~' (otherwise GetFullPath keeps it, case included).
-// %TEMP% is C:\Users\ADMINI~1\AppData\Local\Temp when the profile folder name is long or not ASCII, while
+// %TEMP% is the 8.3 short form of %LOCALAPPDATA%\Temp (PROFIL~1 style) when the profile folder name is long or not ASCII, while
 // %LOCALAPPDATA% keeps the long name. p unchanged when it cannot be expanded.
 func longPath(p string) string {
 	if !strings.Contains(p, "~") {
