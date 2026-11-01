@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 import (
@@ -81,6 +79,9 @@ func (p *progressor) emit(step, msg string, done int) {
 // the guest reboots on its own (qemu stays), the watch runs this start again, and so does any start that finds the
 // recorded boot_id changed. The per-boot steps then run again and the Vulkan fix is owed as above.
 func (m *Manager) Start(ctx context.Context, i int, opt StartOptions) (*StartResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	t0 := time.Now()
 	inst, err := m.instance(i)
 	if err != nil {
@@ -97,7 +98,7 @@ func (m *Manager) Start(ctx context.Context, i int, opt StartOptions) (*StartRes
 	mm := m.withLog(col.Sink())
 	// The execution bridge (bridge.go): an instance about to be launched boots writable already, so the install after
 	// the setup needs one cold boot fewer.
-	bridge := opt.watchQemu == nil && !opt.NoBridge && m.bridgeWanted(i)
+	bridge := opt.watchQemu == nil && !opt.NoBridge && m.bridgeWanted(i, inst.Config)
 	if _, running := m.findQemu(i); bridge && !running {
 		if err := writeBridgeMarker(m.Root, i); err != nil {
 			mm.Log.Warnf("实例 %d 没放上执行桥的开机标记: %v", i, err)

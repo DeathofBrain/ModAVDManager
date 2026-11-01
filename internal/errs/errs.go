@@ -52,6 +52,9 @@ func Newf(code, format string, args ...any) *Error {
 
 // Wrap keeps err as the cause; the message is shown, the cause only in debug output.
 func Wrap(code string, err error, message string) *Error {
+	if code == Internal && CodeOf(err) == Unsupported {
+		code = Unsupported
+	}
 	return &Error{Code: code, Message: message, Cause: err}
 }
 

@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package update updates the ModAVD package of a root (emulator, components, scripts and this manager) from GitHub
 // or MirrorChyan, the way AUTO-MAS's own updater does and on the same files under <root>\.update (state.go), so the
 // two can take over each other's half-done work while both exist. AUTO-MAS keeps its updater for two more major
@@ -19,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -61,6 +60,13 @@ type Updater struct {
 	githubAPI, mirrorAPI string
 	httpClient           *http.Client
 	scan                 func(programs bool) ([]processUse, error)
+}
+
+func unsupportedUpdatePlatform() error {
+	if runtime.GOOS != "windows" {
+		return errs.New(errs.Unsupported, "当前平台暂不支持更新")
+	}
+	return nil
 }
 
 // New is the updater of r.
@@ -116,7 +122,7 @@ func (u *Updater) notUpdatable() string {
 	if u.Root.LocalSDKRoot() != "" {
 		return "这个根目录在 mas-avd.json 里设了 sdkRoot（开发用的本地 SDK），不更新"
 	}
-	if !isFile(filepath.Join(u.l.emulator(), "emulator.exe")) {
+	if !isFile(filepath.Join(u.l.emulator(), root.CurrentPlatform().Emulator)) {
 		return `这个根目录里没有 sdk\emulator，请先放好魔改 AVD`
 	}
 	return ""
@@ -231,6 +237,9 @@ func (u *Updater) begin(st *Status) (*win.FileLock, error) {
 
 // Recover finishes or undoes a swap that was cut off and drops a preparation that was.
 func (u *Updater) Recover(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	lock, err := u.begin(st)
 	if err != nil {
@@ -249,6 +258,9 @@ func (u *Updater) Recover(ctx context.Context) (*Status, error) {
 
 // Prepare downloads, verifies and stages the latest version (instances may keep running).
 func (u *Updater) Prepare(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	if !st.Updatable {
 		return st, errs.New(errs.NotReady, st.NotUpdatableReason)
@@ -470,6 +482,9 @@ func (u *Updater) stage(ctx context.Context, r *release) (err error) {
 // Install brings the root to the latest version: prepares it when it is newer and not staged yet, then swaps it in
 // (every instance off, no other program of the root running). Nothing newer and nothing staged: up to date.
 func (u *Updater) Install(ctx context.Context) (*Status, error) {
+	if err := unsupportedUpdatePlatform(); err != nil {
+		return u.Status(), err
+	}
 	st := u.status()
 	if !st.Updatable {
 		return st, errs.New(errs.NotReady, st.NotUpdatableReason)

@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Guest-only reboots. `adb reboot`, Restart in the guest's power menu or a guest kernel panic restart Android inside

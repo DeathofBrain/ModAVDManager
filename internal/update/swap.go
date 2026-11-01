@@ -1,5 +1,3 @@
-//go:build windows
-
 package update
 
 // Staging state, the swap and recovery: AUTO-MAS update_stage.py begin_staging / finish_staging / abort_staging /

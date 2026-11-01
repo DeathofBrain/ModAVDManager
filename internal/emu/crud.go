@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Create / update / delete. Port of AUTO-MAS manager.py create_instance / _free_index / write_instance_settings /
@@ -22,6 +20,9 @@ import (
 // Create makes a new instance (validated options, free index and ports), sets it up with one headless boot
 // (createinit.go) and returns it, stopped. req.Resume runs that setup again on an instance whose setup failed.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (*InstanceInfo, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if req.Resume {
 		return m.resumeCreate(ctx, req)
 	}
@@ -97,7 +98,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*InstanceInfo,
 		info := m.instanceInfo(ctx, in, nil, nil)
 		return &info, nil
 	}
-	return m.setupNew(ctx, i, req, lock)
+	return m.setupNew(ctx, i, in.Config, req, lock)
 }
 
 // FreeIndex is the index Create picks when none is given (the manager names its create job after it).
@@ -147,7 +148,8 @@ func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest) (*Instanc
 		return nil, errs.New(errs.Usage, "--resume 要给实例编号")
 	}
 	i := *req.Index
-	if _, err := m.instance(i); err != nil {
+	in, err := m.instance(i)
+	if err != nil {
 		return nil, err
 	}
 	lock, err := m.tryInstanceLock(i, "create", "正在新建")
@@ -165,11 +167,14 @@ func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest) (*Instanc
 		return nil, errs.Newf(errs.Busy, "魔改 AVD 实例 %d 的模拟器还开着", i).
 			WithAdvice(fmt.Sprintf("先 modavd stop %d，再重试", i))
 	}
-	return m.setupNew(ctx, i, req, lock)
+	return m.setupNew(ctx, i, in.Config, req, lock)
 }
 
 // Update changes title / memory / cpu / fps / data partition size (next boot).
 func (m *Manager) Update(ctx context.Context, i int, req UpdateRequest) (*UpdateResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if _, err := m.instance(i); err != nil {
 		return nil, err
 	}
@@ -210,6 +215,9 @@ func (m *Manager) Update(ctx context.Context, i int, req UpdateRequest) (*Update
 // without this the retry the error advises would end in "不存在". errs.NotFound only when none of mas_<i>.ini,
 // mas_<i>.avd and instances.<i> is there.
 func (m *Manager) Delete(ctx context.Context, i int) (*DeleteResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	in, err := m.instance(i)
 	var leftovers []string
 	if errs.CodeOf(err) == errs.NotFound {

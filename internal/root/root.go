@@ -207,10 +207,15 @@ func (r *Root) RuntimeSDK() string {
 	return r.SDK()
 }
 
-func (r *Root) EmulatorExe() string { return filepath.Join(r.RuntimeSDK(), "emulator", "emulator.exe") }
-func (r *Root) AdbExe() string      { return filepath.Join(r.RuntimeSDK(), "platform-tools", "adb.exe") }
+func (r *Root) EmulatorExe() string {
+	return filepath.Join(r.RuntimeSDK(), "emulator", CurrentPlatform().Emulator)
+}
+func (r *Root) AdbExe() string {
+	return filepath.Join(r.RuntimeSDK(), "platform-tools", CurrentPlatform().ADB)
+}
 func (r *Root) QemuHeadlessExe() string {
-	return filepath.Join(r.RuntimeSDK(), "emulator", "qemu", "windows-x86_64", "qemu-system-x86_64-headless.exe")
+	p := CurrentPlatform()
+	return filepath.Join(r.RuntimeSDK(), "emulator", "qemu", p.QemuDir, p.QEMUHeadless)
 }
 func (r *Root) AvdHome() string        { return filepath.Join(r.Dir, AvdDir) }
 func (r *Root) LogsDir() string        { return filepath.Join(r.Dir, LogsDir) }
@@ -641,11 +646,7 @@ const (
 )
 
 // keyFiles: a half-extracted directory exists too, so each component needs these files (AUTO-MAS _KEY_FILES).
-var keyFiles = map[string][]string{
-	"platform-tools": {"adb.exe"},
-	"emulator":       {"emulator.exe", `qemu\windows-x86_64\qemu-system-x86_64.exe`},
-	"system-image":   {"system.img", "vendor.img", "kernel-ranchu", "ramdisk.img"},
-}
+var keyFiles = platformKeyFiles()
 
 func isFile(path string) bool {
 	fi, err := os.Stat(path)

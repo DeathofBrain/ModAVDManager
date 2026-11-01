@@ -1,5 +1,3 @@
-//go:build windows
-
 // ModAVD.exe: the desktop manager of one ModAVD root. It runs the local server of package ui and opens it in an Edge
 // app window; closing the window ends it (after running jobs are done). Double-clicking it again while it runs only
 // reopens the window.

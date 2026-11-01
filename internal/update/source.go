@@ -1,5 +1,3 @@
-//go:build windows
-
 package update
 
 // Where a new ModAVD comes from: GitHub's latest release of ModAVD/ModAVD, or MirrorChyan (RID ModAVD, win / x64).
@@ -25,6 +23,7 @@ import (
 	"modavd/internal/buildinfo"
 	"modavd/internal/errs"
 	"modavd/internal/jsonord"
+	"modavd/internal/root"
 )
 
 const (
@@ -199,8 +198,9 @@ func (u *Updater) mirrorLatest(ctx context.Context, cdk string, base *Version) (
 	}
 	q := url.Values{}
 	q.Set("user_agent", userAgentApp)
-	q.Set("os", "win")
-	q.Set("arch", "x64")
+	p := root.CurrentPlatform()
+	q.Set("os", p.MirrorOS)
+	q.Set("arch", p.MirrorArch)
 	q.Set("channel", "stable")
 	if base != nil {
 		q.Set("current_version", base.String())

@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package ui is the server side of the ModAVD desktop manager (ModAVD.exe): a local HTTP server that serves the
 // embedded page (web/) and the API described in API.md over emu.Manager, and decides when the manager exits.
 //

@@ -1,5 +1,3 @@
-//go:build windows
-
 package emu
 
 // Growing the data partition's file system after `set --data-gb` raised it. The emulator (sdk-mas36 on) grows the

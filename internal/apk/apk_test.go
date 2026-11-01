@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -416,7 +417,7 @@ func TestReadManifestRejects(t *testing.T) {
 	wantMsg := map[string]string{
 		"missing":       "APK 文件不存在",
 		"text":          "不是 APK（不是 zip 文件）",
-		"directory":     "不是 APK",
+		"directory":     map[bool]string{true: "不是 APK", false: "打不开 APK 文件"}[runtime.GOOS == "windows"],
 		"no manifest":   "不是 APK（里面没有 AndroidManifest.xml）",
 		"nested name":   "不是 APK（里面没有 AndroidManifest.xml）",
 		"text manifest": "的包名和版本号: 不是二进制 XML",

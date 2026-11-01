@@ -1,5 +1,3 @@
-//go:build windows
-
 // Package adb runs adb against the root's private adb server and talks to the emulator console.
 //
 // Port of AUTO-MAS app/utils/common/emulator2/avd/host.py (adb and console parts). Two hard rules measured there:
@@ -23,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"modavd/internal/errs"
@@ -255,7 +252,8 @@ func listening(port int) (bool, error) {
 
 func isAdbName(name string) bool {
 	n := strings.ToLower(name)
-	return n == "adb.exe" || n == "adb"
+	want := strings.ToLower(root.CurrentPlatform().ADB)
+	return n == want || (strings.HasSuffix(want, ".exe") && n == strings.TrimSuffix(want, ".exe"))
 }
 
 func canceled(ctx context.Context) *errs.Error {
@@ -447,7 +445,7 @@ func (c *Client) execAdb(ctx context.Context, raw bool, limit, timeout time.Dura
 	defer cancel()
 	cmd := exec.CommandContext(tctx, c.Root.AdbExe(), cmdArgs...)
 	cmd.Env = c.Env()
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: win.HideConsole}
+	win.HideConsoleCmd(cmd)
 	cmd.WaitDelay = pipeWaitDelay
 	// Cancel runs only when the deadline (or ctx) ends adb while it still runs, not when merely the pipe wait after a
 	// normal exit outlasts the deadline; that is what tells a timeout from a slow pipe.
@@ -726,7 +724,7 @@ func QemuOnAdbPort(r *root.Root, console int) (win.Process, bool) {
 		return win.Process{}, false
 	}
 	p, ok := win.FindProcess(pid)
-	if !ok || !strings.HasPrefix(strings.ToLower(p.Name), "qemu-system") {
+	if !ok || !isQemuProcessName(p.Name) {
 		return win.Process{}, false
 	}
 	cmdline, err := p.CommandLine()
@@ -734,6 +732,12 @@ func QemuOnAdbPort(r *root.Root, console int) (win.Process, bool) {
 		return win.Process{}, false
 	}
 	return p, true
+}
+
+func isQemuProcessName(name string) bool {
+	n := strings.ToLower(name)
+	q := strings.TrimSuffix(strings.ToLower(root.CurrentPlatform().QEMU), ".exe")
+	return strings.HasPrefix(n, q) || strings.HasPrefix(n, "qemu-system")
 }
 
 // qemuArgsMatch: the adjacent pairs ("-ports", "<console>,<console+1>") and ("-avd", avd) are both on the command

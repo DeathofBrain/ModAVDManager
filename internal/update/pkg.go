@@ -1,5 +1,3 @@
-//go:build windows
-
 package update
 
 // The package: path rules, unpacking (full or MirrorChyan incremental), the manifest check, the stage.
@@ -551,8 +549,9 @@ var buildIDRe = regexp.MustCompile(`^mas-([0-9]+)$`)
 // checkEmulator is AUTO-MAS check_emulator: the package's sdk\emulator is complete, its Pkg.BuildId matches, and its
 // qemu is our own build (it knows the free-page-reporting balloon option).
 func checkEmulator(emu string, target Version) error {
-	if !isFile(filepath.Join(emu, "emulator.exe")) ||
-		!isFile(filepath.Join(emu, "qemu", "windows-x86_64", "qemu-system-x86_64.exe")) {
+	p := root.CurrentPlatform()
+	qemu := filepath.Join(emu, "qemu", p.QemuDir, p.QEMU)
+	if !isFile(filepath.Join(emu, p.Emulator)) || !isFile(qemu) {
 		return packageError(`包里的 sdk\emulator 不完整（缺 emulator.exe 或 qemu）`)
 	}
 	build := "读不到"
@@ -570,7 +569,7 @@ func checkEmulator(emu string, target Version) error {
 	if build != fmt.Sprint(target.Build) {
 		return packageError("包里模拟器的构建号（%s）和要装的 %s（构建号 %d）不一致", build, target.Display(), target.Build)
 	}
-	if !fileContains(filepath.Join(emu, "qemu", "windows-x86_64", "qemu-system-x86_64-headless.exe"), []byte("free-page-reporting")) {
+	if !fileContains(filepath.Join(emu, "qemu", p.QemuDir, p.QEMUHeadless), []byte("free-page-reporting")) {
 		return packageError("包里的模拟器不是魔改 AVD 的自编版")
 	}
 	return nil

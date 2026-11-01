@@ -1,5 +1,3 @@
-//go:build windows
-
 package update
 
 // The on-disk protocol under <root>\.update\, shared with AUTO-MAS's own ModAVD updater
@@ -28,7 +26,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"modavd/internal/jsonord"
@@ -38,7 +35,6 @@ import (
 const (
 	updateDirName = ".update"
 	manifestName  = "modavd-manifest.json"
-	platform      = "win-x64"
 
 	phaseIdle      = "idle"
 	phasePreparing = "preparing"
@@ -49,6 +45,8 @@ const (
 	stepOldMoved = "old_moved"
 	stepNewMoved = "new_moved"
 )
+
+var platform = root.CurrentPlatform().PackageSuffix
 
 // layout is the paths of one root.
 type layout struct{ root string }
@@ -308,8 +306,6 @@ func (l layout) purgeTrash() {
 	}
 }
 
-const fileAttributeReparsePoint = 0x400
-
 // removeBestEffort removes p and, for a real directory, its contents first; a link or junction is removed as the link
 // itself. Reports whether p is gone.
 func removeBestEffort(p string) bool {
@@ -317,11 +313,8 @@ func removeBestEffort(p string) bool {
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist)
 	}
-	if sys, ok := st.Sys().(*syscall.Win32FileAttributeData); ok && sys.FileAttributes&fileAttributeReparsePoint != 0 {
-		if os.Remove(p) != nil {
-			return syscall.RemoveDirectory(mustUTF16(p)) == nil
-		}
-		return true
+	if isReparsePointFunc(st) {
+		return removeLinkFunc(p)
 	}
 	if st.IsDir() {
 		entries, _ := os.ReadDir(p)
@@ -342,10 +335,11 @@ func removeBestEffort(p string) bool {
 	return true
 }
 
-func mustUTF16(s string) *uint16 {
-	p, _ := syscall.UTF16PtrFromString(s)
-	return p
-}
+// removeLinkFunc is a test seam for the invariant that a reparse point is gone
+// only when removing the link itself succeeds.
+var removeLinkFunc = removeLink
+
+var isReparsePointFunc = isReparsePoint
 
 // removeTree empties and removes dir (gone already is fine); links inside are not followed.
 func removeTree(dir string) error {
