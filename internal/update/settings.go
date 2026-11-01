@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"modavd/internal/errs"
+	"modavd/internal/root"
 	"modavd/internal/win"
 )
 
@@ -44,7 +44,7 @@ var cdkEntropy = []byte("ModAVD update: MirrorChyan CDK")
 
 // settingsPath is %LOCALAPPDATA%\ModAVD\update-settings.json; a variable for the tests.
 var settingsPath = func() string {
-	if runtime.GOOS != "windows" {
+	if !root.CurrentPlatform().Windows() {
 		return ""
 	}
 	base := os.Getenv("LOCALAPPDATA")
@@ -84,7 +84,7 @@ func LoadSettings() Settings {
 // SaveSettings changes the source (when not "") and the CDK (when cdk is not nil; "" clears it).
 func SaveSettings(source string, cdk *string) (Settings, error) {
 	s := LoadSettings()
-	if runtime.GOOS != "windows" {
+	if !root.CurrentPlatform().Windows() {
 		return s, errs.New(errs.Unsupported, "当前平台暂不支持保存更新设置")
 	}
 	switch source {

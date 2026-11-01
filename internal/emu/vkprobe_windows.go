@@ -10,6 +10,7 @@ import (
 	"unsafe"
 )
 
+// winErrorText is Python's str(OSError): "[WinError 126] The specified module could not be found."
 func winErrorText(err error) string {
 	var errno syscall.Errno
 	if errors.As(err, &errno) {

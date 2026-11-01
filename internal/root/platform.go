@@ -31,6 +31,15 @@ type Platform struct {
 	MirrorArch    string
 }
 
+// Supported reports whether the host matches one of the package's platform rows.
+// An empty platform is returned for targets that are not listed (for example
+// windows/arm64), and must not inherit the Windows implementation.
+func (p Platform) Supported() bool { return p.Emulator != "" }
+
+// Windows reports whether the host is the Windows/amd64 row used by the
+// Windows-only implementation.
+func (p Platform) Windows() bool { return p.QemuDir == "windows-x86_64" && p.MirrorOS == "win" }
+
 func CurrentPlatform() Platform {
 	switch {
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
