@@ -66,6 +66,9 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 | `restart <i> [--window] [--timeout 300] [--force] [--no-bridge]` | 关机再开机，选项同 `stop`、`start` |
 | `bridge <i> install\|uninstall\|verify` | 装、卸、检查 arm64 执行桥；开机时会自动装，一般不用手动跑（见下） |
 | `check [--memory M]` | 开机前的电脑检查 |
+| `report-config [--no-clipboard]` | 复制电脑配置和开着实例里的游戏信息（只读） |
+| `collect-info [--out-dir D] [--stage-dir D] [--keep-stage] [--no-explorer]` | 收集问题信息并打包（只读） |
+| `components [status]`、`components fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]` | 查看或补全 Google 组件（adb 和系统镜像），做的是「补全组件.bat」做的事（见「补全 Google 组件」） |
 | `window <i> show\|hide`、`install <i> <apk>`、`shell <i> <命令>`、`adb <i> -- <参数>` | 窗口、装 APK、客体命令、adb 透传 |
 | `update [status\|check\|prepare\|install\|recover] [--automas-version V]` | 更新根目录里的整个 ModAVD 包，按「设置」里的更新源（见「更新 ModAVD」） |
 | `servers`、`version`、`mcp`、`help [命令]` | |
@@ -95,7 +98,7 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
   - 新字段 `creation`（`""` / `creating` / `failed`）、`creation_error`、`creation_log` 一直出现；状态记在 `mas-avd.json` 的 `instances.<i>.creationState` 等键里，做完就删掉。调用方（AUTO-MAS）认不出的 `status` 取值一律按忙处理。
   - 进度：命令行逐步打印到 stderr；MCP 的 `create_instance` 发进度通知（带 progressToken 时）；管理器在卡片上显示进度条，关掉窗口会在后台做完。
 
-**退出码**：0 成功，1 内部错误，2 用法或参数不对，3 实例不存在，4 根目录没就绪 / 检查没通过 / 不支持，5 实例忙 / 已存在 / 端口被占，6 超时，7 启动失败，8 已取消，9 更新查不了 / 下载没通过核对。`shell` 不带 `--json` 时是客体命令的退出码，`adb` 是 adb 的退出码；`bridge` 不带 `--json` 时，`install` 后没装上、`uninstall` 后还在都是 1，`verify` 是脚本的退出码。
+**退出码**：0 成功，1 内部错误，2 用法或参数不对 / 没同意许可协议，3 实例不存在，4 根目录没就绪 / 检查没通过 / 不支持，5 实例忙 / 已存在 / 端口被占，6 超时，7 启动失败，8 已取消，9 更新或补全组件时查不了、下不成 / 下载没通过核对。`shell` 不带 `--json` 时是客体命令的退出码，`adb` 是 adb 的退出码；`bridge` 不带 `--json` 时，`install` 后没装上、`uninstall` 后还在都是 1，`verify` 是脚本的退出码。
 
 **约定**（和 AUTO-MAS 一致）：
 
@@ -149,6 +152,22 @@ claude mcp add --transport stdio --scope user modavd '--' D:\ModAVD\tools\modavd
 - `--automas-version` 是调用方 AUTO-MAS 的版本：新版的公告第一行要求更高的 AUTO-MAS 时不装。
 - 退出码：查不了（断网、限流、GitHub 出错）是 9（`update_unavailable`），下载的包没通过核对也是 9（`update_rejected`），有程序在用、正在更新是 5。Go 不读 Windows 的系统代理，只认 `HTTPS_PROXY` / `NO_PROXY`。
 
+## 补全 Google 组件
+
+ModAVD 的发布包里没有 adb（平台工具 37.0.1）和 Android 14 Google APIs x86_64 系统镜像（r14，约 1.5 GB，解压后约 4.2 GB）：它们属于 Google，受《Android 软件开发套件许可协议》约束，不能再分发。`modavd components fetch` 从官方渠道下载、装进 `sdk\`，规则和随包的 `fetch-components.ps1`（「补全组件.bat」）一条一条对上：
+
+- 先从镜像取 `repository2-3.xml` 里的许可协议全文并显示（注明取自哪个镜像、要下载哪些组件），输入 `y` 才继续，否则什么也不下，`downloads\` 里也不多出文件。`--accept-license` 不询问，但协议全文照样取回、照样显示，取不到照样退出；`--json` 时必须给，否则联网之前就报 `usage`。协议和提问不受 `--quiet` 影响。
+- 镜像依次试 googledownloads.cn → 腾讯云镜像 → dl.google.com；`--mirror` 只用其中一个（不分大小写），`--mirror-url` 用自己的目录地址代替这三个（可写多次或用逗号隔开，按顺序试）。取不到许可协议清单的镜像，下载时排到最后。
+- 先下成 `downloads\*.part`，中断了再运行会接着下（`Range`）；已经下满的直接校验。服务器的回答先核对再动 `.part`：200 要大小相符，206 要正好从已有的位置接着给。校验大小和 SHA-1 后才改名。请求头带 `Accept-Encoding: identity`，服务器回压缩过的内容一律不收。HTTP 4xx、大小不符、压缩过的内容、超时马上换下一个镜像（`.part` 留着让下一个接着下）；其余错误同一个镜像最多试 3 次，中间等 3 秒。
+- 解压到 `sdk\.staging\`，整包解完、核对完（关键文件、adb 三个文件钉住的 SHA-256、版本）再挪到位；缺 `source.properties` 就补写。原来不完整的目录改名为 `<目录>.incomplete-<时间>` 留着，不删，确认没用后自己删掉。Ctrl+C 随时能停，不留下装到一半的组件。
+- 已经齐全的组件跳过；默认装好就删 zip，`--keep-downloads` 保留。
+- 路径里有非 ASCII 字符、不是 ModAVD 根目录、`mas-avd.json` 设了 `sdkRoot`、空间不够（下载加解压再留 500 MB），先拒绝。`--test-free-space-mb` 只给测试用，假装只剩这么多 MB。
+- 超时：`--connect-timeout`（连接、TLS 握手、收到响应头，1–600 秒，默认 20）、`--stall-timeout`（一个字节都没收到，1–600 秒，默认 30）、`--manifest-timeout`（取清单整体，1–1800 秒，默认 40）。代理：设了 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 就照环境变量，否则用 Windows「Internet 选项」里手动设的代理；自动配置脚本（PAC）不支持，这时请设 `HTTPS_PROXY`。
+- 只写 `downloads\`、`logs\fetch-components.log`（和同目录的 `.lock`，一个根目录同时只跑一个）、`sdk\` 下的两个组件目录和 `sdk\.staging\`。不碰 adb server，不写注册表，不要管理员。日志里每次下载只记开始和结束，进度只显示不记。
+- 只有 Windows 有组件清单；macOS、Linux 返回 `unsupported`（退出码 4）。
+- 退出码：没同意许可协议是 2（`license_declined`）；路径有中文、空间不够是 4（`precheck_failed`），不是 ModAVD 根目录或设了 `sdkRoot` 也是 4（`not_ready`）；正在补全是 5（`busy`）；许可协议或组件从哪个镜像都没下成是 9（`components_unavailable`），下载的 zip 在每个镜像上 SHA-1 都不对、或者解压后没通过核对也是 9（`components_rejected`）；读不出剩余空间是 1。
+- `components status`（默认）和 `check` 的组件一项是同一份结果，判断规则和 AUTO-MAS 一致（关键文件在就算装了）；`fetch` 判断「齐全」更严（照脚本：关键文件不为空，adb 还要核对钉住的哈希和版本号），所以 `status` 显示已装、`fetch` 仍会重装的情况是有的，旧目录会被改名留着。
+
 ## 构建
 
 要 Go 1.26.5（`go.mod` 的 `toolchain` 行）和 PowerShell 7（`pwsh`）。在仓库根目录：
@@ -175,7 +194,7 @@ go test ./...
 
 | 变量 | 作用 |
 | --- | --- |
-| `MODAVD_TEST_TMP` | 测试的临时文件放在这个目录下，每个包一个子目录（`adb`、`win`、`emu-ops`）；不设就用 Go 默认的临时目录（`%TEMP%` 下）。想让测试数据不落 C 盘时设它。 |
+| `MODAVD_TEST_TMP` | 测试的临时文件放在这个目录下，每个包一个子目录（`adb`、`win`、`emu-ops`、`report`）；不设就用 Go 默认的临时目录（`%TEMP%` 下）。想让测试数据不落 C 盘时设它。 |
 | `MODAVD_TEST_PYTHON` | 对照用的 Python 3；不设就用 PATH 上的 `python`，找不到就跳过那几个对照测试。 |
 | `MODAVD_TEST_IME_APK_DIR` | ModAVD 输入法 APK（`modavd-ime.apk`、`modavd-ime-testapp.apk`）所在的目录；不设就跳过读这两个 APK 的测试。 |
 | `MODAVD_TEST_LIVE` | 设成 `1` 才跑碰真实环境的测试：看本机正在运行的模拟器、起真的 adb server。会碰到本机正在用的实例，平时不要设。 |

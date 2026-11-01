@@ -645,7 +645,8 @@ const (
 		"ModAVD-<版本>-win-x64.zip，整个解压到这个目录"
 )
 
-// keyFiles: a half-extracted directory exists too, so each component needs these files (AUTO-MAS _KEY_FILES).
+// keyFiles: a half-extracted directory exists too, so the emulator needs these files (AUTO-MAS _KEY_FILES). The
+// Google components' files are in SDKComponents.
 var keyFiles = platformKeyFiles()
 
 func isFile(path string) bool {
@@ -674,19 +675,25 @@ func readProperties(path string) map[string]string {
 }
 
 // Components lists platform-tools, emulator, system-image (required) and launcher, ime (optional), in that order.
-// Key files: platform-tools adb.exe; emulator emulator.exe + qemu\windows-x86_64\qemu-system-x86_64.exe;
-// system-image system.img, vendor.img, kernel-ranchu, ramdisk.img. Launcher counts when the APK has its exact size
-// 4099556; ime when components\modavd-ime.apk exists.
+// platform-tools and system-image are SDKComponents, installed when Present (on Windows adb.exe; system.img,
+// vendor.img, kernel-ranchu, ramdisk.img); the emulator needs emulator.exe + qemu\windows-x86_64\qemu-system-x86_64.exe.
+// Launcher counts when the APK has its exact size 4099556; ime when components\modavd-ime.apk exists.
 func (r *Root) Components() []ComponentStatus {
 	sdk := r.RuntimeSDK()
 	local := r.LocalSDKRoot() != ""
-	sdkItem := func(id, name, dir string) ComponentStatus {
-		installed := allFiles(dir, keyFiles[id])
+	google := map[string]SDKComponent{}
+	for _, c := range SDKComponents() {
+		google[c.ID] = c
+	}
+	sdkItem := func(id string) ComponentStatus {
+		c := google[id]
+		dir := c.Dir(sdk)
+		installed := c.Present(dir)
 		version := ""
 		if installed {
 			version = readProperties(filepath.Join(dir, "source.properties"))["Pkg.Revision"]
 		}
-		return ComponentStatus{ID: id, Name: name, Version: version, Installed: installed, LocalSDK: local}
+		return ComponentStatus{ID: id, Name: c.Name, Version: version, Installed: installed, LocalSDK: local}
 	}
 	emulator := ComponentStatus{ID: "emulator", Name: EmulatorName, LocalSDK: local}
 	if r.EmulatorPresent() {
@@ -702,9 +709,9 @@ func (r *Root) Components() []ComponentStatus {
 		launcher.Installed = true
 	}
 	return []ComponentStatus{
-		sdkItem("platform-tools", PlatformToolsName, filepath.Join(sdk, "platform-tools")),
+		sdkItem("platform-tools"),
 		emulator,
-		sdkItem("system-image", SystemImageName, filepath.Join(sdk, SystemImageDir)),
+		sdkItem("system-image"),
 		launcher,
 		{ID: "ime", Name: ImeName, Installed: isFile(r.ImeAPK()), Optional: true},
 	}

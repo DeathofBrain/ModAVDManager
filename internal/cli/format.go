@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"modavd/internal/components"
 	"modavd/internal/emu"
 )
 
@@ -468,26 +469,66 @@ func formatCheck(w io.Writer, r *emu.CheckResult) {
 	if len(r.Components) > 0 {
 		fmt.Fprintln(w, "组件：")
 		for _, c := range r.Components {
-			ok := c.Installed
-			line := "  " + checkMark(&ok) + " " + c.Name
-			if c.Installed {
-				if c.Version != "" {
-					line += " " + c.Version
-				}
-				if c.Build != "" {
-					line += "（ModAVD " + c.Build + "）"
-				}
-			} else {
-				line += " 未安装"
-			}
-			if c.Optional {
-				line += "（可选）"
-			}
-			if c.LocalSDK {
-				line += "（本地 SDK）"
-			}
-			fmt.Fprintln(w, line)
+			fmt.Fprintln(w, "  "+componentLine(c))
 		}
+	}
+}
+
+// componentLine is one component of check and components status: "✓ 平台工具（adb） 37.0.1".
+func componentLine(c emu.ComponentStatus) string {
+	ok := c.Installed
+	line := checkMark(&ok) + " " + c.Name
+	if c.Installed {
+		if c.Version != "" {
+			line += " " + c.Version
+		}
+		if c.Build != "" {
+			line += "（ModAVD " + c.Build + "）"
+		}
+	} else {
+		line += " 未安装"
+	}
+	if c.Optional {
+		line += "（可选）"
+	}
+	if c.LocalSDK {
+		line += "（本地 SDK）"
+	}
+	return line
+}
+
+func formatComponents(w io.Writer, data any) {
+	switch r := data.(type) {
+	case *ComponentsStatusResult:
+		fmt.Fprintf(w, "根目录：%s\n", r.Root)
+		for _, c := range r.Components {
+			fmt.Fprintln(w, componentLine(c))
+		}
+	case *components.Result:
+		fetched := false
+		for _, c := range r.Components {
+			version := c.Version
+			if version == "" {
+				version = "未知"
+			}
+			switch {
+			case c.Skipped:
+				fmt.Fprintf(w, "已有：%s（版本 %s），跳过\n", c.Name, version)
+			case c.Downloaded:
+				fetched = true
+				fmt.Fprintf(w, "已装好：%s（版本 %s）\n", c.Name, version)
+			}
+			if c.SetAside != "" {
+				fmt.Fprintf(w, "  原来不完整的目录改名为 %s，确认没用后可以自己删掉\n", c.SetAside)
+			}
+		}
+		if len(r.Downloads) > 0 {
+			fmt.Fprintf(w, "下载的 %s 留在 downloads 里\n", strings.Join(r.Downloads, "、"))
+		}
+		if !fetched {
+			fmt.Fprint(w, "组件都已齐全，不需要下载。")
+		}
+		fmt.Fprintln(w, "完成，可以在 AUTO-MAS 里添加这个文件夹了。")
 	}
 }
 
