@@ -87,7 +87,7 @@ var (
 	optTestFreeSpace = flagSpec{"test-free-space-mb", kindInt, "MB", "测试用：假装磁盘只剩这么多 MB"}
 	optNoClipboard   = flagSpec{"no-clipboard", kindBool, "", "不复制到剪贴板"}
 	optOutDir        = flagSpec{"out-dir", kindString, "目录", "问题包输出目录（默认桌面）"}
-	optStageDir      = flagSpec{"stage-dir", kindString, "目录", "暂存目录的父目录（默认系统临时目录）"}
+	optStageDir      = flagSpec{"stage-dir", kindString, "目录", "暂存目录的父目录（默认 %TEMP%）"}
 	optKeepStage     = flagSpec{"keep-stage", kindBool, "", "保留暂存目录"}
 	optNoExplorer    = flagSpec{"no-explorer", kindBool, "", "不打开资源管理器"}
 )
@@ -184,15 +184,20 @@ func init() {
 			run:     runCheck, human: humanOf(formatCheck),
 		},
 		{
-			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例游戏信息",
-			details: "只读收集 Windows 配置；只在私有 adb server 已经监听时按主机协议查询开着实例的应用，不会启动 adb 或碰 5037。",
-			flags:   []flagSpec{optNoClipboard}, final: true,
+			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例里装的游戏（同「复制配置信息.bat」）",
+			details: "电脑、模拟器、硬件加速和开着的实例里装的游戏，显示出来并复制到剪贴板（--no-clipboard 不复制）。" +
+				"只读：只在实例开着、它的 adb server 已经在监听时按 adb 主机协议去问，不起 adb server、不调用 adb.exe、不碰 5037；" +
+				"不带用户名、电脑名和完整路径。目前只支持 Windows。",
+			flags: []flagSpec{optNoClipboard}, final: true,
 			run: runReportConfig, human: humanReportConfig,
 		},
 		{
-			name: "collect-info", args: "[--out-dir 目录] [--stage-dir 目录] [--keep-stage] [--no-explorer]", summary: "收集问题信息并打包",
-			details: "只读收集日志、实例配置和现场信息，过滤磁盘镜像以及 MAS 的 config、data；每节出错仍会继续并写入 summary.txt。",
-			flags:   []flagSpec{optOutDir, optStageDir, optKeepStage, optNoExplorer}, final: true,
+			name: "collect-info", args: "[--out-dir 目录] [--stage-dir 目录] [--keep-stage] [--no-explorer]",
+			summary: "收集问题信息，打成 zip（同「收集问题信息.bat」）",
+			details: "打成「魔改AVD问题信息-<时间>.zip」，默认放桌面，再打开资源管理器选中它（--no-explorer 不打开）。" +
+				"--stage-dir 是暂存目录的父目录（默认 %TEMP%），--keep-stage 保留暂存目录。每一节单独收，出错写进 summary.txt 接着收下一节。" +
+				"只读：不收磁盘镜像，不收 AUTO-MAS 的配置和账号数据，不起 adb server、不碰 5037。目前只支持 Windows。",
+			flags: []flagSpec{optOutDir, optStageDir, optKeepStage, optNoExplorer}, final: true,
 			run: runCollectInfo, human: humanCollectInfo,
 		},
 		{
@@ -825,12 +830,20 @@ func runReportConfig(c *cmdCtx) (any, error) {
 	return report.BuildConfig(c.ctx, r, report.ConfigOptions{NoClipboard: c.inv.boolOpt("no-clipboard")})
 }
 
+// humanReportConfig prints what report-config.ps1 prints: a blank line, the lines, a blank line, then whether they
+// were copied.
 func humanReportConfig(w io.Writer, data any) {
-	if r, ok := data.(*report.ConfigResult); ok && r != nil {
-		fmt.Fprintln(w, r.Text)
-		if !strings.HasSuffix(r.Text, "\n") {
-			fmt.Fprintln(w)
-		}
+	r, ok := data.(*report.ConfigResult)
+	if !ok || r == nil {
+		return
+	}
+	fmt.Fprintln(w)
+	for _, l := range r.Lines {
+		fmt.Fprintln(w, l)
+	}
+	fmt.Fprintln(w)
+	if r.Message != "" {
+		fmt.Fprintln(w, r.Message)
 	}
 }
 
@@ -842,19 +855,34 @@ func runCollectInfo(c *cmdCtx) (any, error) {
 	return report.Collect(c.ctx, r, report.CollectOptions{
 		OutDir: c.inv.strOpt("out-dir"), StageDir: c.inv.strOpt("stage-dir"),
 		KeepStage: c.inv.boolOpt("keep-stage"), NoExplorer: c.inv.boolOpt("no-explorer"),
+		Progress: func(msg string) { c.log.Infof("%s", msg) },
 	})
 }
 
+// humanCollectInfo prints the end of collect-info.ps1's output (its progress lines went to the log).
 func humanCollectInfo(w io.Writer, data any) {
-	if r, ok := data.(*report.CollectResult); ok && r != nil {
-		fmt.Fprintln(w, "收集完成。")
-		fmt.Fprintln(w, "文件："+r.ZipPath)
-		if r.Stage != "" {
-			fmt.Fprintln(w, "暂存目录："+r.Stage)
-		}
-		if len(r.Errors) > 0 {
-			fmt.Fprintf(w, "有 %d 节没收集成功，原因写在 zip 里的 summary.txt。\n", len(r.Errors))
-		}
+	r, ok := data.(*report.CollectResult)
+	if !ok || r == nil {
+		return
+	}
+	if r.StageError != "" {
+		fmt.Fprintln(w, "暂存目录没删掉："+r.Stage)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "收集完成。")
+	fmt.Fprintln(w, "文件："+r.ZipPath)
+	fmt.Fprintln(w, "大小："+r.ZipSize)
+	for _, l := range strings.Split(r.PrivacyNote, "\r\n") {
+		fmt.Fprintln(w, l)
+	}
+	if !r.MasFound {
+		fmt.Fprintln(w, "没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志")
+	}
+	if len(r.Problems) > 0 {
+		fmt.Fprintf(w, "有 %d 节没收集成功，原因写在 zip 里的 summary.txt，照样提交就行。\n", len(r.Problems))
+	}
+	if r.StageKept && r.StageError == "" {
+		fmt.Fprintln(w, "暂存目录保留在："+r.Stage)
 	}
 }
 

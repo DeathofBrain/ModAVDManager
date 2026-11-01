@@ -178,7 +178,7 @@ go test ./...
 
 | 变量 | 作用 |
 | --- | --- |
-| `MODAVD_TEST_TMP` | 测试的临时文件放在这个目录下，每个包一个子目录（`adb`、`win`、`emu-ops`）；不设就用 Go 默认的临时目录（`%TEMP%` 下）。想让测试数据不落 C 盘时设它。 |
+| `MODAVD_TEST_TMP` | 测试的临时文件放在这个目录下，每个包一个子目录（`adb`、`win`、`emu-ops`、`report`）；不设就用 Go 默认的临时目录（`%TEMP%` 下）。想让测试数据不落 C 盘时设它。 |
 | `MODAVD_TEST_PYTHON` | 对照用的 Python 3；不设就用 PATH 上的 `python`，找不到就跳过那几个对照测试。 |
 | `MODAVD_TEST_IME_APK_DIR` | ModAVD 输入法 APK（`modavd-ime.apk`、`modavd-ime-testapp.apk`）所在的目录；不设就跳过读这两个 APK 的测试。 |
 | `MODAVD_TEST_LIVE` | 设成 `1` 才跑碰真实环境的测试：看本机正在运行的模拟器、起真的 adb server。会碰到本机正在用的实例，平时不要设。 |

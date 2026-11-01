@@ -1,663 +1,737 @@
-// Package report contains the read-only diagnostics used by the report-config
-// and collect-info CLI commands.  The package deliberately does not start adb,
-// an emulator, or any other long lived process.
+// Package report is the read-only diagnostics behind `modavd report-config` and `modavd collect-info`: ports of the
+// ModAVD package scripts report-config.ps1 and collect-info.ps1 (package/ in the ModAVD repository), with the same
+// text, the same zip layout and the same rules as their headers state. Neither command starts an emulator, an adb
+// server or adb.exe, and neither touches port 5037: installed apps and the live state of a running instance are
+// asked over the adb host protocol, and only of a server that already listens.
+//
+// Everything the scripts ask Windows goes through Host, so the tests compare the produced text line by line with
+// what the scripts print for the same answers (testdata/). Where the scripts format with .NET (-f '{0:N1}',
+// Sort-Object, Get-ChildItem order), the helpers below reproduce Windows PowerShell 5.1.
 package report
 
 import (
-	"archive/zip"
 	"bytes"
-	"context"
-	"errors"
-	"fmt"
 	"io"
-	"net"
+	"io/fs"
+	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
-	"modavd/internal/errs"
+	"modavd/internal/jsonord"
 	"modavd/internal/root"
 )
 
-const privacyNote = "隐私提示：问题包只保存在本机，命令不会上传。\n" +
-	"- 问题包可能含本机路径、Windows 用户名、截图和 AUTO-MAS 日志；上传前请检查内容。\n" +
-	"- summary.txt 和日志通常可以贴到 Issue；crash 目录含线程栈和少量内存片段，请私下发送。"
+// PrivacyNote is collect-info.ps1's $PrivacyNote, word for word: the head of summary.txt and the last thing printed.
+const PrivacyNote = "隐私提示：问题包只保存在本机，脚本不会上传。\r\n" +
+	"- 里面有：summary.txt（电脑和模拟器的情况）、模拟器日志、实例配置、AUTO-MAS 日志（mas 文件夹）；有实例在运行时还有现场截图和安卓状态（live 文件夹）；模拟器近 7 天崩溃过的话还有崩溃转储（crash 文件夹）。不收磁盘镜像，不收 AUTO-MAS 的配置和账号数据，也不会有意收集账号密码。\r\n" +
+	"- 这些文件里都有本机路径，路径里可能有 Windows 用户名；截图和 AUTO-MAS 日志里可能有游戏账号名。\r\n" +
+	"- 可以公开：在 GitHub Issue（https://github.com/ModAVD/ModAVD/issues）里贴 summary.txt 和日志，或者上传删掉 crash 文件夹后的问题包。上传前看一眼，不想公开的内容先删掉。\r\n" +
+	"- 不要公开：crash 文件夹（崩溃转储，含模拟器进程的线程栈和少量内存片段）。带 crash 文件夹的完整问题包请发邮件到 qiyinxi@foxmail.com，邮件里写上 Issue 编号。"
 
-type InstanceConfig struct {
-	Index int      `json:"index"`
-	Name  string   `json:"name"`
-	RAM   string   `json:"memory"`
-	Games []string `json:"games"`
-}
+// ---- .NET number formatting --------------------------------------------------------------------------------------
 
-type ConfigResult struct {
-	Text      string           `json:"text"`
-	System    []string         `json:"system"`
-	Simulator []string         `json:"simulator"`
-	Instances []InstanceConfig `json:"instances"`
-}
-
-type ConfigOptions struct {
-	NoClipboard bool
-}
-
-// BuildConfig creates the same user-facing report as the bundled PowerShell
-// helper.  It only asks an already-running private adb server for packages.
-func BuildConfig(ctx context.Context, r *root.Root, opt ConfigOptions) (*ConfigResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "复制配置信息目前只支持 Windows")
+// formatN is '{0:N<decimals>}' -f v of Windows PowerShell 5.1 (.NET Framework, en-US / zh-CN): the double cut to 15
+// significant digits, then rounded half away from zero to the decimals, thousands grouped with ','.
+func formatN(v float64, decimals int) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	}
-	res := &ConfigResult{}
-	res.System = collectWindowsSystem(ctx)
-	res.Simulator = collectSimulator(ctx, r)
-	res.Instances = collectInstances(ctx, r)
-	if res.System == nil {
-		res.System = []string{}
+	neg := v < 0
+	s := strconv.FormatFloat(math.Abs(v), 'e', 14, 64) // d.dddddddddddddde±XX
+	mant, expText, _ := strings.Cut(s, "e")
+	exp, _ := strconv.Atoi(expText)
+	digits := []byte(strings.Replace(mant, ".", "", 1)) // 15 digits; the value is 0.d1d2... × 10^(exp+1)
+	point := exp + 1                                    // digits before the decimal point
+	keep := point + decimals
+	switch {
+	case keep < 0:
+		digits, point = nil, 0
+	case keep < len(digits):
+		up := digits[keep] >= '5'
+		digits = digits[:keep]
+		for i := len(digits) - 1; up && i >= 0; i-- {
+			if digits[i] == '9' {
+				digits[i] = '0'
+				continue
+			}
+			digits[i]++
+			up = false
+		}
+		if up {
+			digits = append([]byte{'1'}, digits...)
+			point++
+		}
 	}
-	if res.Simulator == nil {
-		res.Simulator = []string{}
-	}
-	if res.Instances == nil {
-		res.Instances = []InstanceConfig{}
-	}
-	lines := append([]string{"【魔改 AVD 试用配置】"}, res.System...)
-	lines = append(lines, res.Simulator...)
-	if len(res.Instances) == 0 {
-		lines = append(lines, "游戏包：没有实例开着，读不到。在 AUTO-MAS 里开着实例时再运行一次，就会列出来")
+	var intPart, frac string
+	if point <= 0 {
+		intPart = "0"
+		frac = strings.Repeat("0", -point) + string(digits)
 	} else {
-		for _, in := range res.Instances {
-			games := "没装"
-			if len(in.Games) > 0 {
-				games = strings.Join(in.Games, "、")
-			}
-			lines = append(lines, fmt.Sprintf("实例 %d%s：%s", in.Index, in.RAM, games))
+		for len(digits) < point {
+			digits = append(digits, '0')
 		}
-	}
-	lines = append(lines, "AUTO-MAS 版本：", "用的脚本（MAA / M9A / …）：", "效果（能跑 / 有问题，问题是…）：")
-	res.Text = strings.Join(lines, "\r\n")
-	if !opt.NoClipboard {
-		if err := copyClipboard(res.Text); err != nil {
-			return nil, errs.Wrap(errs.Unsupported, err, "复制到剪贴板失败，请手动复制上面的文字")
+		intPart = strings.TrimLeft(string(digits[:point]), "0")
+		if intPart == "" {
+			intPart = "0"
 		}
+		frac = string(digits[point:])
 	}
-	return res, nil
-}
-
-func collectWindowsSystem(ctx context.Context) []string {
-	ps := `$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
-$os=Get-CimInstance Win32_OperatingSystem
-$cv=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-$v=''; if($cv.DisplayVersion){$v=$cv.DisplayVersion}elseif($cv.ReleaseId){$v=$cv.ReleaseId}; $v=('{0}（{1}.{2}）' -f $v,$cv.CurrentBuild,$cv.UBR).Trim()
-Write-Output ('系统：{0} {1}' -f ($os.Caption -replace '^Microsoft\s+',''),$v)
-foreach($c in @(Get-CimInstance Win32_Processor)){Write-Output ('CPU：{0}（{1} 核 {2} 线程）' -f $c.Name.Trim(),$c.NumberOfCores,$c.NumberOfLogicalProcessors)}
-Write-Output ('内存：{0:N0} GB（现在可用 {1:N0} GB）' -f ([double]$os.TotalVisibleMemorySize/1MB),([double]$os.FreePhysicalMemory/1MB))
-$g=@(Get-CimInstance Win32_VideoController | ? {$_.PNPDeviceID -like 'PCI\*'}); if($g.Count -eq 0){$g=@(Get-CimInstance Win32_VideoController)}
-foreach($x in $g){$d='';if($x.DriverDate){$d='，'+([datetime]$x.DriverDate).ToString('yyyy-MM-dd')};Write-Output ('显卡：{0}（驱动 {1}{2}）' -f $x.Name,$x.DriverVersion,$d)}`
-	return runPowerShellLines(ctx, ps)
-}
-
-func collectSimulator(ctx context.Context, r *root.Root) []string {
-	build := r.EmulatorVersion()
-	if build == "" {
-		build = "读不到"
+	if len(frac) < decimals {
+		frac += strings.Repeat("0", decimals-len(frac))
 	}
-	free := ""
-	if fi, err := os.Stat(r.Dir); err == nil && fi.IsDir() {
-		free = ""
+	frac = frac[:decimals]
+	var b strings.Builder
+	if neg && strings.Trim(intPart+frac, "0") != "" {
+		b.WriteByte('-')
 	}
-	lines := []string{fmt.Sprintf("模拟器：%s%s", build, free)}
-	check := filepath.Join(r.RuntimeSDK(), "emulator", "emulator-check.exe")
-	if _, err := os.Stat(check); err == nil {
-		if got := runCommandLines(ctx, check, "accel"); len(got) > 0 {
-			lines = append(lines, "硬件加速："+strings.Join(got, " "))
+	for i, c := range intPart {
+		if i > 0 && (len(intPart)-i)%3 == 0 {
+			b.WriteByte(',')
 		}
+		b.WriteRune(c)
 	}
-	return lines
+	if decimals > 0 {
+		b.WriteByte('.')
+		b.WriteString(frac)
+	}
+	return b.String()
 }
 
-func runPowerShellLines(ctx context.Context, script string) []string {
-	got := runCommandLines(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	if len(got) == 0 {
-		return []string{"系统：Windows（硬件信息读不到）"}
+const (
+	kb = 1 << 10
+	mb = 1 << 20
+	gb = 1 << 30
+)
+
+// formatSize is collect-info.ps1's Format-Size.
+func formatSize(n float64) string {
+	switch {
+	case n >= gb:
+		return formatN(n/gb, 2) + " GB"
+	case n >= mb:
+		return formatN(n/mb, 1) + " MB"
+	case n >= kb:
+		return formatN(n/kb, 1) + " KB"
 	}
-	return got
+	return strconv.FormatInt(int64(math.RoundToEven(n)), 10) + " B" // [long] rounds to even
 }
 
-func runCommandLines(ctx context.Context, exe string, args ...string) []string {
-	to, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	b, err := exec.CommandContext(to, exe, args...).Output()
-	if err != nil {
+// optInt is '{0}' -f of a nullable integer property: "" for null.
+func optInt(v *int64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatInt(*v, 10)
+}
+
+// optBool is '{0}' -f of a nullable boolean: True / False, "" for null.
+func optBool(v *bool) string {
+	switch {
+	case v == nil:
+		return ""
+	case *v:
+		return "True"
+	}
+	return "False"
+}
+
+// ---- .NET strings ------------------------------------------------------------------------------------------------
+
+// netTrim is String.Trim() (Char.IsWhiteSpace at both ends).
+func netTrim(s string) string { return strings.TrimFunc(s, unicode.IsSpace) }
+
+// netTrimEnd is String.TrimEnd().
+func netTrimEnd(s string) string { return strings.TrimRightFunc(s, unicode.IsSpace) }
+
+var netSpaces = regexp.MustCompile(`[\s\p{Z}\x{85}\v]+`)
+
+// collapseSpace is -replace '\s+', ' ' (.NET \s is Unicode white space).
+func collapseSpace(s string) string { return netSpaces.ReplaceAllString(s, " ") }
+
+// splitNetLines splits like [IO.File]::ReadAllLines and -split "`r?`n" after both: on \r\n, \n and \r, with no empty
+// line after a final line break.
+func splitNetLines(s string) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
 		return nil
 	}
-	var lines []string
-	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
+	return strings.Split(s, "\n")
 }
 
-func collectInstances(ctx context.Context, r *root.Root) []InstanceConfig {
-	ents, _ := os.ReadDir(r.AvdHome())
-	var out []InstanceConfig
-	port := r.AdbServerPort()
-	for _, ent := range ents {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".ini") {
-			continue
+// splitCRLF is -split "`r?`n": a final line break leaves an empty last line.
+func splitCRLF(s string) []string {
+	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+}
+
+// decodeText is how .NET reads a text file or a UTF-8 pipe: BOM dropped, invalid bytes replaced.
+func decodeText(b []byte) string {
+	return root.DecodeUTF8Replace(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))
+}
+
+// utf16Len is String.Length.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
+}
+
+// padRight is '{0,-n}' -f s: padded with spaces to n UTF-16 units, never cut.
+func padRight(s string, n int) string {
+	if k := n - utf16Len(s); k > 0 {
+		return s + strings.Repeat(" ", k)
+	}
+	return s
+}
+
+// padLeft is '{0,n}' -f s.
+func padLeft(s string, n int) string {
+	if k := n - utf16Len(s); k > 0 {
+		return strings.Repeat(" ", k) + s
+	}
+	return s
+}
+
+// ---- ordering --------------------------------------------------------------------------------------------------
+
+// cultureSymbols is the order Windows sorts ASCII punctuation in (measured with Sort-Object on PowerShell 5.1):
+// mostly code point order, with + < = > after ~. '-' and the apostrophe are missing: they are ignored at first (see
+// cultureCompare).
+const cultureSymbols = " !\"#$%&()*,./:;?@[\\]^_`{|}~+<=>"
+
+// cultureWeight is the first-level weight of one character: control characters, then punctuation, digits, letters
+// (case ignored), then everything else by code point.
+func cultureWeight(r rune) int {
+	switch {
+	case r < 0x20 || r == 0x7f:
+		return int(r)
+	case r >= '0' && r <= '9':
+		return 0x100 + int(r-'0')
+	case r < 0x80 && unicode.IsLetter(r):
+		return 0x200 + int(unicode.ToLower(r))
+	case r < 0x80:
+		if i := strings.IndexRune(cultureSymbols, r); i >= 0 {
+			return 0x80 + i
 		}
-		name := strings.TrimSuffix(ent.Name(), ".ini")
-		if !strings.HasPrefix(name, root.AvdNamePrefix) {
-			continue
+		return 0xff
+	}
+	return 0x400 + int(unicode.ToLower(r))
+}
+
+func cultureIgnored(r rune) bool { return r == '-' || r == '\'' }
+
+// cultureCompare orders strings like Sort-Object on Windows PowerShell 5.1 (the culture-aware comparison of .NET
+// Framework): '-' and the apostrophe do not count at first, punctuation sorts before digits and digits before letters, case
+// does not count; then lower case goes first at the first letter that differs only in case, then the string with
+// fewer ignored characters, then code point order. That is NLS for the ASCII file, package and zip entry names
+// sorted here (mas-avd.json after mas/…, live/mas_10-… before live/mas_1-…), not a full implementation of it.
+func cultureCompare(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	var pa, pb []rune
+	for _, r := range ra {
+		if !cultureIgnored(r) {
+			pa = append(pa, r)
 		}
-		i, err := strconv.Atoi(strings.TrimPrefix(name, root.AvdNamePrefix))
-		if err != nil || !root.ValidIndex(i) {
-			continue
+	}
+	for _, r := range rb {
+		if !cultureIgnored(r) {
+			pb = append(pb, r)
 		}
-		in := InstanceConfig{Index: i, Name: name}
-		if b, err := os.ReadFile(filepath.Join(r.AvdHome(), name+".avd", "config.ini")); err == nil {
-			props := parseProperties(b)
-			if v := props["hw.ramSize"]; v != "" {
-				if n, e := strconv.Atoi(v); e == nil {
-					in.RAM = fmt.Sprintf("，%d GB", n/1024)
-				}
+	}
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		if wa, wb := cultureWeight(pa[i]), cultureWeight(pb[i]); wa != wb {
+			return cmpInt(wa, wb)
+		}
+	}
+	if len(pa) != len(pb) {
+		return cmpInt(len(pa), len(pb))
+	}
+	for i := range pa {
+		if ua, ub := unicode.IsUpper(pa[i]), unicode.IsUpper(pb[i]); ua != ub {
+			if ua {
+				return 1
 			}
+			return -1
 		}
-		serial := root.Serial(i)
-		if games, ok := queryGames(ctx, port, serial); ok {
-			in.Games = games
-		}
-		out = append(out, in)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
-	return out
+	if len(ra) != len(rb) {
+		return cmpInt(len(ra), len(rb))
+	}
+	return strings.Compare(a, b)
 }
 
-func parseProperties(b []byte) map[string]string {
-	m := map[string]string{}
-	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
-		if i := strings.IndexByte(line, '='); i > 0 && !strings.HasPrefix(strings.TrimSpace(line), "#") {
-			m[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+1:])
-		}
+func cmpInt(a, b int) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
 	}
-	return m
+	return 0
 }
 
-func adbRequest(ctx context.Context, port int, service string) ([]byte, error) {
-	if port == 5037 || port < 1 || port > 65535 {
-		return nil, errors.New("拒绝使用 5037")
-	}
-	d := net.Dialer{Timeout: 2 * time.Second}
-	c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	payload := []byte(service)
-	if _, err := fmt.Fprintf(c, "%04x", len(payload)); err != nil {
-		return nil, err
-	}
-	if _, err := c.Write(payload); err != nil {
-		return nil, err
-	}
-	status := make([]byte, 4)
-	if _, err := io.ReadFull(c, status); err != nil {
-		return nil, err
-	}
-	if string(status) == "FAIL" {
-		var h [4]byte
-		if _, err := io.ReadFull(c, h[:]); err != nil {
-			return nil, err
-		}
-		n, _ := strconv.ParseInt(string(h[:]), 16, 32)
-		b := make([]byte, n)
-		_, _ = io.ReadFull(c, b)
-		return nil, errors.New(string(b))
-	}
-	if string(status) != "OKAY" {
-		return nil, fmt.Errorf("adb server 返回 %q", status)
-	}
-	var h [4]byte
-	if _, err := io.ReadFull(c, h[:]); err != nil {
-		return nil, err
-	}
-	n, err := strconv.ParseInt(string(h[:]), 16, 32)
-	if err != nil || n < 0 || n > 64<<20 {
-		return nil, errors.New("adb 返回长度不对")
-	}
-	b := make([]byte, n)
-	_, err = io.ReadFull(c, b)
-	return b, err
+// sortCulture is Sort-Object on strings.
+func sortCulture(s []string) {
+	sort.SliceStable(s, func(i, j int) bool { return cultureCompare(s[i], s[j]) < 0 })
 }
 
-func queryGames(ctx context.Context, port int, serial string) ([]string, bool) {
-	devices, err := adbRequest(ctx, port, "host:devices")
-	if err != nil || !strings.Contains(string(devices), serial+"\tdevice") {
-		return nil, false
+// ntfsLess is the order NTFS lists a directory in (names compared upper-cased), which Get-ChildItem keeps.
+func ntfsLess(a, b string) bool {
+	ua, ub := strings.ToUpper(a), strings.ToUpper(b)
+	if ua != ub {
+		return ua < ub
 	}
-	out, err := adbShell(ctx, port, serial, "pm list packages -3")
-	if err != nil {
-		return nil, true
-	}
-	known := map[string]string{
-		"com.hypergryph.arknights":          "明日方舟（官服）",
-		"com.hypergryph.arknights.bilibili": "明日方舟（B 服）",
-		"com.hypergryph.endfield":           "明日方舟：终末地",
-		"com.shenlan.m.reverse1999":         "重返未来：1999",
-		"com.miHoYo.hkrpg":                  "崩坏：星穹铁道（官服）",
-		"com.miHoYo.hkrpg.bilibili":         "崩坏：星穹铁道（B 服）",
-		"com.miHoYo.enterprise.NGHSoD":      "崩坏3（官服）",
-	}
-	var games []string
-	for _, line := range strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
-		pkg := strings.TrimSpace(strings.TrimPrefix(line, "package:"))
-		if pkg == "" || pkg == "de.jrpie.android.launcher" {
-			continue
-		}
-		label := pkg
-		if name, ok := known[pkg]; ok {
-			label = name
-		}
-		if version, e := adbShell(ctx, port, serial, "dumpsys package "+pkg+" 2>/dev/null | grep -m1 versionName="); e == nil {
-			for _, v := range strings.Split(version, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(v), "versionName=") {
-					if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "versionName=")); s != "" {
-						label += " " + s
-					}
-					break
-				}
-			}
-		}
-		games = append(games, label)
-	}
-	sort.Strings(games)
-	return games, true
+	return a < b
 }
 
-func adbShell(ctx context.Context, port int, serial, command string) (string, error) {
-	d := net.Dialer{Timeout: 2 * time.Second}
-	c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return "", err
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-	send := func(s string) error {
-		b := []byte(s)
-		if _, err := fmt.Fprintf(c, "%04x", len(b)); err != nil {
-			return err
-		}
-		_, err := c.Write(b)
-		return err
-	}
-	readStatus := func() error {
-		var st [4]byte
-		if _, err := io.ReadFull(c, st[:]); err != nil {
-			return err
-		}
-		if string(st[:]) != "OKAY" {
-			return fmt.Errorf("adb 状态 %q", st[:])
-		}
-		return nil
-	}
-	if err := send("host:transport:" + serial); err != nil {
-		return "", err
-	}
-	if err := readStatus(); err != nil {
-		return "", err
-	}
-	if err := send("shell:" + command); err != nil {
-		return "", err
-	}
-	if err := readStatus(); err != nil {
-		return "", err
-	}
-	var b bytes.Buffer
-	_, err = io.Copy(&b, c)
-	return strings.TrimSpace(b.String()), err
-}
-
-type CollectOptions struct {
-	OutDir     string
-	StageDir   string
-	KeepStage  bool
-	NoExplorer bool
-}
-
-type CollectResult struct {
-	ZipPath string   `json:"zip_path"`
-	Stage   string   `json:"stage"`
-	Summary string   `json:"summary"`
-	Entries []string `json:"entries"`
-	Errors  []string `json:"errors"`
-}
-
-// Collect builds a diagnostics zip.  Every section is isolated so one missing
-// WMI/log file does not prevent the remaining evidence from being collected.
-func Collect(ctx context.Context, r *root.Root, opt CollectOptions) (*CollectResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "收集问题信息目前只支持 Windows")
-	}
-	if opt.OutDir == "" {
-		opt.OutDir = desktopDir()
-	}
-	if opt.StageDir == "" {
-		opt.StageDir = os.TempDir()
-	}
-	if err := os.MkdirAll(opt.OutDir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(opt.StageDir, 0o755); err != nil {
-		return nil, err
-	}
-	stamp := time.Now().Format("20060102-150405")
-	stage, err := os.MkdirTemp(opt.StageDir, "modavd-collect-"+stamp+"-")
-	if err != nil {
-		return nil, err
-	}
-	res := &CollectResult{Stage: stage}
-	defer func() {
-		if !opt.KeepStage {
-			_ = os.RemoveAll(stage)
-		}
-	}()
-	var summary bytes.Buffer
-	summary.WriteString("魔改 AVD 问题信息\r\n")
-	summary.WriteString(privacyNote + "\r\n")
-	summary.WriteString("生成时间：" + time.Now().Format("2006-01-02 15:04:05 -0700") + "\r\n")
-	section := func(name string, fn func() error) {
-		summary.WriteString("\r\n== " + name + " ==\r\n")
-		if e := fn(); e != nil {
-			msg := name + "：" + e.Error()
-			summary.WriteString("[本节出错] " + msg + "\r\n")
-			res.Errors = append(res.Errors, msg)
-		}
-	}
-	section("ModAVD 目录与版本", func() error {
-		summary.WriteString("路径：" + r.Dir + "\r\n")
-		summary.WriteString("SDK：" + r.RuntimeSDK() + "\r\n")
-		if err := copyFile(r.MetadataPath(), filepath.Join(stage, "mas-avd.json")); err != nil {
-			summary.WriteString("没有 mas-avd.json\r\n")
-		}
-		return nil
-	})
-	section("实例列表与实例文件", func() error { return collectInstanceFiles(r, stage, &summary) })
-	section("模拟器日志", func() error { return collectLogs(r, stage, &summary) })
-	section("模拟器崩溃转储", func() error { return collectCrashes(stage, &summary) })
-	section("AUTO-MAS 日志", func() error { return collectMASLogs(stage, &summary) })
-	section("现场截图与状态", func() error { summary.WriteString("没有实例在运行，跳过\r\n"); return nil })
-	summary.WriteString("\r\n== 收集过程 ==\r\n")
-	if len(res.Errors) == 0 {
-		summary.WriteString("各节都没出错。\r\n")
-	} else {
-		summary.WriteString("出错的节：\r\n")
-		for _, e := range res.Errors {
-			summary.WriteString("  " + e + "\r\n")
-		}
-	}
-	res.Summary = summary.String()
-	summaryBytes := append([]byte{0xEF, 0xBB, 0xBF}, []byte(res.Summary)...)
-	if err := os.WriteFile(filepath.Join(stage, "summary.txt"), summaryBytes, 0o644); err != nil {
-		return nil, err
-	}
-	name := "魔改AVD问题信息-" + stamp + ".zip"
-	zipPath := filepath.Join(opt.OutDir, name)
-	if _, err := os.Stat(zipPath); err == nil {
-		zipPath = filepath.Join(opt.OutDir, "魔改AVD问题信息-"+stamp+"-"+strconv.Itoa(os.Getpid())+".zip")
-	}
-	entries, err := zipStage(zipPath, stage)
-	if err != nil {
-		return nil, err
-	}
-	res.ZipPath, res.Entries = zipPath, entries
-	if !opt.NoExplorer {
-		_ = openExplorer(zipPath)
-	}
-	return res, nil
-}
-
-func copyFile(src, dst string) error {
-	b, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(dst, b, 0o644)
-}
-
-func collectInstanceFiles(r *root.Root, stage string, summary *bytes.Buffer) error {
-	ents, err := os.ReadDir(r.AvdHome())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			summary.WriteString("还没有实例。\r\n")
-			return nil
-		}
-		return err
-	}
-	count := 0
-	for _, ent := range ents {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".ini") {
-			continue
-		}
-		count++
-		name := strings.TrimSuffix(ent.Name(), ".ini")
-		if !strings.HasPrefix(name, root.AvdNamePrefix) {
-			continue
-		}
-		if err := copyFile(filepath.Join(r.AvdHome(), ent.Name()), filepath.Join(stage, "avd", ent.Name())); err != nil {
-			summary.WriteString(name + "：复制 ini 失败：" + err.Error() + "\r\n")
-			continue
-		}
-		dir := filepath.Join(r.AvdHome(), name+".avd")
-		for _, fn := range []string{"config.ini", "hardware-qemu.ini", "emulator-user.ini"} {
-			if err := copyFile(filepath.Join(dir, fn), filepath.Join(stage, "avd", name+".avd", fn)); err == nil {
-				summary.WriteString(name + "：已收集 " + fn + "\r\n")
-			}
-		}
-		var listing []string
-		if files, e := os.ReadDir(dir); e == nil {
-			for _, file := range files {
-				if file.IsDir() {
-					listing = append(listing, fmt.Sprintf("%-40s <DIR>", file.Name()))
-				} else if info, e := file.Info(); e == nil {
-					listing = append(listing, fmt.Sprintf("%-40s %16d  %s", file.Name(), info.Size(), info.ModTime().Format("2006-01-02 15:04:05")))
-				}
-			}
-		}
-		if len(listing) == 0 {
-			listing = []string{"（空目录）"}
-		}
-		_ = os.MkdirAll(filepath.Join(stage, "avd", name+".avd"), 0o755)
-		_ = os.WriteFile(filepath.Join(stage, "avd", name+".avd", "_files.txt"), []byte(strings.Join(listing, "\r\n")+"\r\n"), 0o644)
-	}
-	if count == 0 {
-		summary.WriteString("还没有实例（avd 目录不存在或里面没有 *.ini）。\r\n")
-	}
-	return nil
-}
-
-func collectLogs(r *root.Root, stage string, summary *bytes.Buffer) error {
-	dir := r.LogsDir()
+// listDir is Get-ChildItem -LiteralPath dir: directories first, then files, each in NTFS order; hidden entries only
+// with force (-Force; a system file that is not hidden is listed anyway, measured on PowerShell 5.1).
+func listDir(dir string, force bool) ([]fs.FileInfo, error) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			summary.WriteString("没有 logs 目录\r\n")
-			return nil
-		}
-		return err
+		return nil, err
 	}
-	count := 0
-	for _, ent := range ents {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".log") && !strings.HasSuffix(ent.Name(), ".txt") {
+	var dirs, files []fs.FileInfo
+	for _, e := range ents {
+		info, err := e.Info()
+		if err != nil {
+			continue // gone meanwhile
+		}
+		if !force && isHidden(info) {
 			continue
 		}
-		if err := copyFile(filepath.Join(dir, ent.Name()), filepath.Join(stage, "logs", ent.Name())); err == nil {
-			count++
+		if info.IsDir() {
+			dirs = append(dirs, info)
+		} else {
+			files = append(files, info)
 		}
 	}
-	summary.WriteString(fmt.Sprintf("共复制 %d 份日志。\r\n", count))
-	return nil
+	byName := func(s []fs.FileInfo) {
+		sort.SliceStable(s, func(i, j int) bool { return ntfsLess(s[i].Name(), s[j].Name()) })
+	}
+	byName(dirs)
+	byName(files)
+	return append(dirs, files...), nil
 }
 
-func collectCrashes(stage string, summary *bytes.Buffer) error {
-	crashDir := regexp.MustCompile(`^emu-crash-[0-9]+\.[0-9]+\.[0-9]+-mas\.db$`)
-	since := time.Now().Add(-7 * 24 * time.Hour)
-	seen := map[string]bool{}
-	var candidates []string
-	for _, base := range []string{os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP")} {
-		if base == "" {
-			continue
-		}
-		dir := filepath.Join(base, "Temp", "AndroidEmulator")
-		if base == os.Getenv("TEMP") {
-			dir = filepath.Join(base, "AndroidEmulator")
-		}
-		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() || !strings.HasSuffix(strings.ToLower(info.Name()), ".dmp") {
-				return nil
-			}
-			parent := filepath.Base(filepath.Dir(path))
-			if !crashDir.MatchString(parent) || info.ModTime().Before(since) {
-				return nil
-			}
-			if !seen[path] {
-				seen[path] = true
-				candidates = append(candidates, path)
-			}
-			return nil
-		})
-	}
-	if len(candidates) == 0 {
-		summary.WriteString("近 7 天没有\r\n")
-		return nil
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i] > candidates[j] })
-	if len(candidates) > 3 {
-		candidates = candidates[:3]
-	}
-	for _, src := range candidates {
-		base := filepath.Base(filepath.Dir(src))
-		dst := filepath.Join(stage, "crash", base, filepath.Base(src))
-		if info, err := os.Stat(src); err == nil && info.Size() <= 100<<20 {
-			_ = copyFile(src, dst)
-			summary.WriteString(src + "  " + formatBytes(info.Size()) + "\r\n")
-		}
-	}
-	return nil
-}
-
-func collectMASLogs(stage string, summary *bytes.Buffer) error {
-	for _, base := range []string{os.Getenv("LOCALAPPDATA"), os.Getenv("APPDATA")} {
-		if base == "" {
-			continue
-		}
-		for _, dir := range []string{filepath.Join(base, "AUTO-MAS", "debug"), filepath.Join(base, "AUTO-MAS", "logs")} {
-			for _, name := range []string{"app.log", "frontend.log"} {
-				if err := copyFile(filepath.Join(dir, name), filepath.Join(stage, "mas", name)); err == nil {
-					summary.WriteString(name + "：已收集\r\n")
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func formatBytes(n int64) string {
-	if n >= 1<<30 {
-		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
-	}
-	if n >= 1<<20 {
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	}
-	if n >= 1<<10 {
-		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
-	}
-	return fmt.Sprintf("%d B", n)
-}
-
-func zipStage(dst, stage string) ([]string, error) {
-	f, err := os.Create(dst)
+// listFiles is Get-ChildItem -LiteralPath dir -File.
+func listFiles(dir string) ([]fs.FileInfo, error) {
+	all, err := listDir(dir, false)
 	if err != nil {
 		return nil, err
 	}
-	zw := zip.NewWriter(f)
-	var names []string
-	var files []struct{ path, name string }
-	err = filepath.Walk(stage, func(path string, info os.FileInfo, e error) error {
-		if e != nil {
-			return e
+	var out []fs.FileInfo
+	for _, fi := range all {
+		if !fi.IsDir() {
+			out = append(out, fi)
 		}
-		if info.IsDir() {
-			return nil
+	}
+	return out, nil
+}
+
+// ---- files -------------------------------------------------------------------------------------------------------
+
+// readProps is collect-info.ps1's Read-Properties: key=value lines (not starting with #), keys and values trimmed,
+// keys case-insensitive (a PowerShell hashtable), the last one wins. A missing file is empty.
+func readProps(path string) (map[string]string, error) {
+	h := map[string]string{}
+	b, err := root.ReadFileShared(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return h, nil
 		}
-		rel, _ := filepath.Rel(stage, path)
-		rel = filepath.ToSlash(rel)
-		if rel == "" || forbiddenEntry(rel) {
-			return nil
+		return h, err
+	}
+	for _, line := range splitNetLines(decodeText(b)) {
+		i := strings.IndexByte(line, '=')
+		if i > 0 && !strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "#") {
+			h[strings.ToLower(netTrim(line[:i]))] = netTrim(line[i+1:])
 		}
-		files = append(files, struct{ path, name string }{path, rel})
-		return nil
-	})
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].name == "summary.txt" {
+	}
+	return h, nil
+}
+
+// prop reads a key of readProps' map.
+func prop(h map[string]string, key string) string { return h[strings.ToLower(key)] }
+
+// isFile is Test-Path -PathType Leaf.
+func isFile(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
+
+// exists is Test-Path -LiteralPath.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// trueLength is collect-info.ps1's Get-TrueLength: the length of an open handle (a directory listing lags behind a
+// file that is being written), else the listed length.
+func trueLength(path string) (int64, error) {
+	if f, err := root.OpenShared(path); err == nil {
+		defer f.Close()
+		if fi, err := f.Stat(); err == nil {
+			return fi.Size(), nil
+		}
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// copyShared is collect-info.ps1's Copy-Shared: the source opened with read / write / delete sharing (a log the
+// emulator or AUTO-MAS is writing), only its last tail bytes when tail > 0; returns the length of the copy.
+func copyShared(src, dst string, tail int64) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return 0, err
+	}
+	in, err := root.OpenShared(src)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	if tail > 0 {
+		if fi, err := in.Stat(); err == nil && fi.Size() > tail {
+			if _, err := in.Seek(-tail, io.SeekEnd); err != nil {
+				return 0, err
+			}
+		}
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return 0, err
+	}
+	_, err = io.Copy(out, in)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return 0, err
+	}
+	fi, err := os.Stat(dst)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// writeLinesBOM is [IO.File]::WriteAllLines(path, lines, UTF8 with BOM): CRLF after every line.
+func writeLinesBOM(path string, lines []string) error {
+	var b bytes.Buffer
+	b.WriteString("\xef\xbb\xbf")
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteString("\r\n")
+	}
+	return os.WriteFile(path, b.Bytes(), 0o644)
+}
+
+// ---- mas-avd.json as ConvertFrom-Json sees it --------------------------------------------------------------------
+
+// readConfig reads mas-avd.json like `[IO.File]::ReadAllText(...) | ConvertFrom-Json`. obj is nil when the file is
+// missing, empty, null or not an object; msg is what collect-info.ps1 writes about a file it cannot use ("" when
+// there is nothing to say).
+func readConfig(path string) (obj *jsonord.Obj, msg string) {
+	b, err := root.ReadFileShared(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ""
+		}
+		return nil, "mas-avd.json 解析失败，按空配置处理：" + err.Error()
+	}
+	text := bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
+	if strings.TrimSpace(string(text)) == "" {
+		return nil, "" // ConvertFrom-Json of nothing is $null, no error
+	}
+	v, err := jsonord.Parse(text)
+	if err != nil {
+		return nil, "mas-avd.json 解析失败，按空配置处理：" + err.Error()
+	}
+	switch v.Kind() {
+	case jsonord.Null:
+		return nil, ""
+	case jsonord.Object:
+		return v.Obj(), ""
+	}
+	return nil, "mas-avd.json 不是 JSON 对象，按空配置处理"
+}
+
+// getCI is $obj.Name on a ConvertFrom-Json object: property names are case-insensitive.
+func getCI(o *jsonord.Obj, key string) *jsonord.Value {
+	if o.Has(key) {
+		return o.Get(key)
+	}
+	for _, k := range o.Keys() {
+		if strings.EqualFold(k, key) {
+			return o.Get(k)
+		}
+	}
+	return nil
+}
+
+// hasCI is $obj.PSObject.Properties.Name -contains key.
+func hasCI(o *jsonord.Obj, key string) bool {
+	for _, k := range o.Keys() {
+		if strings.EqualFold(k, key) {
 			return true
 		}
-		if files[j].name == "summary.txt" {
+	}
+	return false
+}
+
+// sdkRootOf is mas-avd.json's sdkRoot when it is a string that is not blank, trimmed; "" otherwise.
+func sdkRootOf(o *jsonord.Obj) string {
+	s, ok := getCI(o, "sdkRoot").Str()
+	if !ok {
+		return ""
+	}
+	return netTrim(s)
+}
+
+// truthy is PowerShell's truth of a JSON value: null, false, 0, "" and empty arrays are false.
+func truthy(v *jsonord.Value) bool {
+	switch v.Kind() {
+	case jsonord.Null:
+		return false
+	case jsonord.Bool:
+		b, _ := v.BoolVal()
+		return b
+	case jsonord.Number:
+		f, _ := v.Float()
+		return f != 0
+	case jsonord.String:
+		s, _ := v.Str()
+		return s != ""
+	case jsonord.Array:
+		return len(v.Items()) > 0
+	}
+	return true
+}
+
+// psDouble is [double]$v for a JSON number, boolean or numeric string; ok=false where the cast would throw.
+func psDouble(v *jsonord.Value) (float64, bool) {
+	switch v.Kind() {
+	case jsonord.Number:
+		return v.Float()
+	case jsonord.Bool:
+		if b, _ := v.BoolVal(); b {
+			return 1, true
+		}
+		return 0, true
+	case jsonord.String:
+		s, _ := v.Str()
+		f, err := strconv.ParseFloat(netTrim(s), 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+var scriptPortText = regexp.MustCompile(`^[+-]?[0-9]+$`)
+
+// scriptPort is collect-info.ps1's Resolve-MetadataPort: an integer (fractions truncated, a numeric string, a
+// boolean as 0 / 1) of 1024-65535 that is not 5037 and not a console / adb / gRPC port of instances 0-9 (5 is
+// reserved).
+func scriptPort(v *jsonord.Value) (int, bool) {
+	var port int64
+	switch v.Kind() {
+	case jsonord.Bool:
+		if b, _ := v.BoolVal(); b {
+			port = 1
+		}
+	case jsonord.Number:
+		if i, ok := v.Int(); ok {
+			port = i
+		} else {
+			f, ok := v.Float()
+			if !ok || math.IsNaN(f) || math.IsInf(f, 0) || math.Abs(f) >= 1<<63 {
+				return 0, false
+			}
+			port = int64(f)
+		}
+	case jsonord.String:
+		s, _ := v.Str()
+		s = netTrim(s)
+		if !scriptPortText.MatchString(s) {
+			return 0, false
+		}
+		i, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		port = i
+	default:
+		return 0, false
+	}
+	if port < 1024 || port > 65535 || port == 5037 {
+		return 0, false
+	}
+	for i := 0; i <= root.MaxIndex; i++ {
+		if i == root.ReservedIndex {
+			continue
+		}
+		if c := int64(root.ConsolePort(i)); port >= c && port <= c+2 {
+			return 0, false
+		}
+	}
+	return int(port), true
+}
+
+// psInt is [int]$v (report-config.ps1's Try-Get { [int]$cfg.adbServerPort }): numbers rounded half to even, numeric
+// strings parsed; ok=false where the cast throws (out of Int32, not a number) or for null.
+func psInt(v *jsonord.Value) (int, bool) {
+	var f float64
+	switch v.Kind() {
+	case jsonord.Bool:
+		if b, _ := v.BoolVal(); b {
+			return 1, true
+		}
+		return 0, true
+	case jsonord.Number:
+		if i, ok := v.Int(); ok {
+			if i < math.MinInt32 || i > math.MaxInt32 {
+				return 0, false
+			}
+			return int(i), true
+		}
+		var ok bool
+		if f, ok = v.Float(); !ok {
+			return 0, false
+		}
+	case jsonord.String:
+		s, _ := v.Str()
+		s = netTrim(s)
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			f = float64(i)
+		} else if h, ok := strings.CutPrefix(strings.ToLower(s), "0x"); ok {
+			u, err := strconv.ParseUint(h, 16, 32)
+			if err != nil {
+				return 0, false
+			}
+			f = float64(int32(uint32(u)))
+		} else if f, err = strconv.ParseFloat(s, 64); err != nil {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	f = math.RoundToEven(f)
+	if math.IsNaN(f) || f < math.MinInt32 || f > math.MaxInt32 {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// psJSON is `$v | ConvertTo-Json -Compress` on Windows PowerShell 5.1 for a value ConvertFrom-Json produced: null
+// pipes nothing (""), a one-item array unrolls to the item, decimals keep their digits, doubles (with an exponent)
+// print shortest, and strings escape < > & ' like JavaScriptSerializer.
+func psJSON(v *jsonord.Value) string {
+	if v.Kind() == jsonord.Null {
+		return ""
+	}
+	if items := v.Items(); v.Kind() == jsonord.Array && len(items) == 1 {
+		return psJSON(items[0])
+	}
+	var b strings.Builder
+	writePSJSON(&b, v)
+	return b.String()
+}
+
+func writePSJSON(b *strings.Builder, v *jsonord.Value) {
+	switch v.Kind() {
+	case jsonord.Null:
+		b.WriteString("null")
+	case jsonord.Bool:
+		x, _ := v.BoolVal()
+		b.WriteString(strconv.FormatBool(x))
+	case jsonord.Number:
+		lit, _ := v.NumberLiteral()
+		if strings.ContainsAny(lit, "eE") {
+			f, _ := v.Float()
+			lit = strconv.FormatFloat(f, 'f', -1, 64)
+		}
+		b.WriteString(lit)
+	case jsonord.String:
+		s, _ := v.Str()
+		b.WriteByte('"')
+		for _, r := range s {
+			switch {
+			case r == '"':
+				b.WriteString(`\"`)
+			case r == '\\':
+				b.WriteString(`\\`)
+			case r == '\n':
+				b.WriteString(`\n`)
+			case r == '\r':
+				b.WriteString(`\r`)
+			case r == '\t':
+				b.WriteString(`\t`)
+			case r < 0x20 || r == '<' || r == '>' || r == '&' || r == '\'':
+				b.WriteString(`\u00`)
+				b.WriteString(strconv.FormatInt(int64(r)>>4, 16))
+				b.WriteString(strconv.FormatInt(int64(r)&15, 16))
+			default:
+				b.WriteRune(r)
+			}
+		}
+		b.WriteByte('"')
+	case jsonord.Array:
+		b.WriteByte('[')
+		for i, it := range v.Items() {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writePSJSON(b, it)
+		}
+		b.WriteByte(']')
+	case jsonord.Object:
+		b.WriteByte('{')
+		o := v.Obj()
+		for i, k := range o.Keys() {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writePSJSON(b, jsonord.NewString(k))
+			b.WriteByte(':')
+			writePSJSON(b, o.Get(k))
+		}
+		b.WriteByte('}')
+	}
+}
+
+// ---- regular expressions as .NET runs them -----------------------------------------------------------------------
+
+// isWordRune is \w in .NET: letters, digits, connector punctuation and marks.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Pc, r) || unicode.Is(unicode.Mn, r)
+}
+
+// containsWordFold is -match '\bword\b' (case-insensitive, Unicode word boundaries).
+func containsWordFold(s, word string) bool {
+	ls, lw := strings.ToLower(s), strings.ToLower(word)
+	for from := 0; ; {
+		i := strings.Index(ls[from:], lw)
+		if i < 0 {
 			return false
 		}
-		return files[i].name < files[j].name
-	})
-	if err == nil {
-		for _, file := range files {
-			in, e := os.Open(file.path)
-			if e != nil {
-				err = e
-				break
-			}
-			h, e := zw.Create(file.name)
-			if e == nil {
-				_, e = io.Copy(h, in)
-			}
-			_ = in.Close()
-			if e != nil {
-				err = e
-				break
-			}
-			names = append(names, file.name)
-		}
-	}
-	if e := zw.Close(); err == nil {
-		err = e
-	}
-	if e := f.Close(); err == nil {
-		err = e
-	}
-	return names, err
-}
-
-func forbiddenEntry(name string) bool {
-	for _, p := range strings.Split(strings.ToLower(name), "/") {
-		if p == "config" || p == "data" || p == "snapshots" || p == "userdata" {
+		i += from
+		before, _ := utf8.DecodeLastRuneInString(ls[:i])
+		after, _ := utf8.DecodeRuneInString(ls[i+len(lw):])
+		if (i == 0 || !isWordRune(before)) && (i+len(lw) == len(ls) || !isWordRune(after)) {
 			return true
 		}
+		from = i + 1
 	}
-	l := strings.ToLower(name)
-	return strings.HasSuffix(l, ".img") || strings.HasSuffix(l, ".qcow2")
-}
-
-func desktopDir() string {
-	if v := os.Getenv("USERPROFILE"); v != "" {
-		return filepath.Join(v, "Desktop")
-	}
-	return os.TempDir()
 }
