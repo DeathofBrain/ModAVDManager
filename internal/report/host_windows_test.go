@@ -89,3 +89,27 @@ func TestProcessPathAsStarted(t *testing.T) {
 		t.Errorf("command line %q", got[0].CommandLine)
 	}
 }
+
+// longPath is what [IO.Path]::GetFullPath of Windows PowerShell 5.1 gives for an existing directory: 8.3 short names
+// expanded, a path without '~' as it is (case included).
+func TestLongPath(t *testing.T) {
+	base := testTempDir(t)
+	long := filepath.Join(base, "Long Name Dir", "AndroidEmulator")
+	if err := os.MkdirAll(long, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if p := strings.ToUpper(long); longPath(p) != p {
+		t.Errorf("longPath(%q) = %q, want it unchanged", p, longPath(p))
+	}
+	missing := filepath.Join(base, "NOSUCH~1", "x")
+	if p := longPath(missing); p != missing {
+		t.Errorf("longPath(%q) = %q, want it unchanged", missing, p)
+	}
+	s := shortName(t, filepath.Dir(long))
+	if s == "" {
+		t.Skipf("no 8.3 short name for %s on this volume", filepath.Dir(long))
+	}
+	if p := longPath(filepath.Join(base, s, "AndroidEmulator")); p != long {
+		t.Errorf("longPath of %s\\AndroidEmulator = %q, want %q", s, p, long)
+	}
+}

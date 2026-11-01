@@ -944,10 +944,13 @@ func (c *collector) crashDumps() error {
 		}
 		p := filepath.Join(v, b.sub)
 		if exists(p) {
+			// [IO.Path]::GetFullPath: also the 8.3 short names expanded, or a %TEMP% of C:\Users\ADMINI~1\... would be
+			// a second folder and every dump in it found twice
 			full, err := filepath.Abs(p)
 			if err != nil {
 				full = p
 			}
+			full = longPath(full)
 			if !containsFold(bases, full) {
 				bases = append(bases, full)
 			}

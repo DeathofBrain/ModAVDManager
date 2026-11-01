@@ -4,7 +4,8 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File gen_golden.ps1 -ScriptDir <ModAVD>\package -Work <empty dir>
 #
 # Run it with Windows PowerShell 5.1 in a time zone without daylight saving time in January (the fake files are dated
-# January 2026; the tests read the UTC offset back from summary.txt). Each script runs unchanged in its own
+# January 2026; the tests read the UTC offset back from summary.txt), with -Work on a volume that makes 8.3 short
+# names (the shortname scenario's %TEMP% is one). Each script runs unchanged in its own
 # powershell.exe except for what is injected into a copy of it:
 #   - after `$ErrorActionPreference = 'Stop'`: functions of the same name in front of the cmdlets it asks Windows
 #     with (Get-CimInstance, Get-ItemProperty, Get-NetTCPConnection, netstat, Get-Partition / Get-Disk /
@@ -315,7 +316,19 @@ foreach ($name in $names) {
     [IO.File]::WriteAllText($ci, (Patch-Script $ciText '# ---------------------------------------------------------------- 暂存目录' $CiOverrides $sc.limits), $Utf8Bom)
 
     $envs = @{ MODAVD_MOCK_FILE = $mock; MODAVD_MOCK_NAME = $name; MODAVD_MOCK_ADBPORT = [string]$AdbPort }
-    foreach ($p in $sc.env.PSObject.Properties) { $envs[$p.Name] = Join-Path $base ([string]$p.Value) }
+    foreach ($p in $sc.env.PSObject.Properties) {
+        $v = [string]$p.Value
+        # <dir>\rest: dir by its 8.3 short name
+        if ($v -match '^<([^>]+)>(.*)$') {
+            $dir = Join-Path $base $Matches[1]
+            $rest = $Matches[2]
+            [void](New-Item -ItemType Directory -Path $dir -Force)
+            $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortName
+            if (-not $short -or $short -eq (Split-Path -Leaf $dir)) { throw "$dir has no 8.3 short name: -Work must be on a volume that makes them" }
+            $v = $short + $rest
+        }
+        $envs[$p.Name] = Join-Path $base $v
+    }
     $envs['TMP'] = $envs['TEMP']
     [void](New-Item -ItemType Directory -Path $envs['TEMP'] -Force)
     $gold = Join-Path $Out $name

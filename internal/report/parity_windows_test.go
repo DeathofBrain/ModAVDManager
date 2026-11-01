@@ -24,12 +24,13 @@ import (
 // (testdata/golden, written by testdata/gen_golden.ps1 from the scripts themselves).
 
 // testTempDir is a fresh directory, removed afterwards: under $MODAVD_TEST_TMP\report when that is set, otherwise
-// t.TempDir().
+// t.TempDir(). Its 8.3 short names are expanded (%TEMP% is C:\Users\RUNNER~1\... on GitHub's runners), as the
+// scripts' [IO.Path]::GetFullPath expands them in the paths they print.
 func testTempDir(t *testing.T) string {
 	t.Helper()
 	env := os.Getenv("MODAVD_TEST_TMP")
 	if env == "" {
-		return t.TempDir()
+		return longPath(t.TempDir())
 	}
 	base := filepath.Join(env, "report")
 	if err := os.MkdirAll(base, 0o755); err != nil {
@@ -40,7 +41,7 @@ func testTempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return longPath(dir)
 }
 
 func goldenPath(scenario string, parts ...string) string {
@@ -193,8 +194,10 @@ func runCollect(t *testing.T, f *fixture) (*CollectResult, []string, map[string]
 	return res, names, files
 }
 
+// shortname: %TEMP% is %LOCALAPPDATA%\Temp by an 8.3 short name; the script finds its crash dumps once, by the long
+// name.
 func TestCollectMatchesScript(t *testing.T) {
-	for _, name := range []string{"full", "bare"} {
+	for _, name := range []string{"full", "bare", "shortname"} {
 		t.Run(name, func(t *testing.T) {
 			useGoldenZone(t, name)
 			f := newFixture(t, name, testTempDir(t), "")
@@ -298,7 +301,7 @@ func TestCollectMatchesScript(t *testing.T) {
 }
 
 func TestReportConfigMatchesScript(t *testing.T) {
-	for _, name := range []string{"full", "bare"} {
+	for _, name := range []string{"full", "bare", "shortname"} {
 		t.Run(name, func(t *testing.T) {
 			useGoldenZone(t, name)
 			f := newFixture(t, name, testTempDir(t), "")

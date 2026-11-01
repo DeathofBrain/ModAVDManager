@@ -7,7 +7,10 @@
     "files: path under {{BASE}} ('root/' is the root); text, or size (that many 'x'), or b64; mtime is local wall-clock",
     "time (default 2026-01-10 08:00:00); hidden sets the hidden attribute; dir makes a directory.",
     "<name>Err makes that query fail with the message; limits lower the script's $LogCapBytes, $MasLogTailBytes and",
-    "$DumpMaxBytes."
+    "$DumpMaxBytes.",
+    "env: paths under {{BASE}}; '<dir>\\rest' names dir (directly under {{BASE}}) by its 8.3 short name, the way %TEMP%",
+    "is C:\\Users\\ADMINI~1\\AppData\\Local\\Temp while %LOCALAPPDATA% is C:\\Users\\Administrator\\AppData\\Local (only on a",
+    "volume that makes 8.3 names: gen_golden.ps1 fails elsewhere, the tests skip the scenario)."
   ],
   "full": {
     "now": "2026-01-15 12:00:00",
@@ -231,6 +234,46 @@
       {"path": "root/mas-avd.json", "text": "{\"adbServerPort\": \"5037\", \"sdkRoot\": \" {{BASE_J}}\\\\nosdk \", \"instances\": {\"2\": {\"memoryMb\": 3072.5}, \"10\": {}, \"1\": {\"memoryMb\": \"4096\"}}}"},
       {"path": "tmp/AndroidEmulator/emu-crash-37.2.10-mas.db/reports/old.dmp", "size": 300, "mtime": "2026-01-08 11:59:59"},
       {"path": "lad/Temp/AndroidEmulator/emu-crash-37.2.12-mas.db/reports/new.dmp", "size": 200, "mtime": "2026-01-08 12:00:00"}
+    ]
+  },
+  "shortname": {
+    "now": "2026-01-15 12:00:00",
+    "root": "root",
+    "env": {"LOCALAPPDATA": "Local Data Dir", "TEMP": "<Local Data Dir>\\Temp"},
+    "os": {
+      "Caption": "Microsoft Windows 11 Pro",
+      "Version": "10.0.26100",
+      "BuildNumber": "26100",
+      "OSArchitecture": "64-bit",
+      "TotalVisibleMemorySize": 16654336,
+      "FreePhysicalMemory": 8327168
+    },
+    "currentVersion": {"DisplayVersion": "24H2", "ReleaseId": "2009", "CurrentBuild": "26100", "UBR": 4351},
+    "cpus": [
+      {"Name": "Fake CPU 8 Cores", "NumberOfCores": 8, "NumberOfLogicalProcessors": 16, "VirtualizationFirmwareEnabled": true}
+    ],
+    "cs": {"HypervisorPresent": false},
+    "gpus": [
+      {"Name": "Fake GPU", "DriverVersion": "1.2.3.4", "PNPDeviceID": "PCI\\VEN_1234&DEV_5678", "DriverDate": "2025-06-01"}
+    ],
+    "features": [
+      {"Name": "HypervisorPlatform", "InstallState": 1}
+    ],
+    "av": [
+      {"displayName": "Windows Defender", "productState": 397568}
+    ],
+    "disk": {"BusType": "NVMe", "MediaType": "SSD"},
+    "drive": {"AvailableFreeSpace": 107374182400, "TotalSize": 512110190592, "DriveFormat": "NTFS"},
+    "uninstall": {"HKLM": [], "WOW": [], "HKCU": []},
+    "processes": [],
+    "listeners": [],
+    "events": [],
+    "run": {},
+    "adb": {"devices": "", "serials": {}},
+    "files": [
+      {"path": "Local Data Dir/Temp/AndroidEmulator/emu-crash-37.2.10-mas.db/reports/a.dmp", "size": 300, "mtime": "2026-01-14 09:00:00"},
+      {"path": "Local Data Dir/Temp/AndroidEmulator/emu-crash-37.2.10-mas.db/reports/b.dmp", "size": 200, "mtime": "2026-01-13 09:00:00"},
+      {"path": "Local Data Dir/Temp/AndroidEmulator/emu-crash-37.2.10-mas.db/reports/c.dmp", "size": 100, "mtime": "2026-01-12 09:00:00"}
     ]
   }
 }

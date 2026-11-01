@@ -28,3 +28,6 @@ func openExplorer(string) error { return unsupported("打开资源管理器") }
 
 // isHidden: on Windows FILE_ATTRIBUTE_HIDDEN; dot files are not hidden for Get-ChildItem either.
 func isHidden(fs.FileInfo) bool { return false }
+
+// longPath: on Windows the path with its 8.3 short names expanded ([IO.Path]::GetFullPath); there are none here.
+func longPath(p string) string { return p }

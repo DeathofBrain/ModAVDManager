@@ -749,6 +749,33 @@ func isHidden(fi fs.FileInfo) bool {
 	return false
 }
 
+// longPath is an existing path with its 8.3 short names expanded, as [IO.Path]::GetFullPath of Windows PowerShell
+// 5.1 gives it: GetLongPathNameW, only when the path has a '~' (otherwise GetFullPath keeps it, case included).
+// %TEMP% is C:\Users\ADMINI~1\AppData\Local\Temp when the profile folder name is long or not ASCII, while
+// %LOCALAPPDATA% keeps the long name. p unchanged when it cannot be expanded.
+func longPath(p string) string {
+	if !strings.Contains(p, "~") {
+		return p
+	}
+	u, err := syscall.UTF16PtrFromString(p)
+	if err != nil {
+		return p
+	}
+	buf := make([]uint16, 260)
+	for range 3 {
+		n, err := syscall.GetLongPathName(u, &buf[0], uint32(len(buf)))
+		if err != nil || n == 0 {
+			return p
+		}
+		if int(n) < len(buf) {
+			return syscall.UTF16ToString(buf[:n])
+		}
+		// too small: n is the size it needs, terminating NUL included
+		buf = make([]uint16, n)
+	}
+	return p
+}
+
 // ---- desktop, clipboard, Explorer --------------------------------------------------------------------------------
 
 // desktopDir is [Environment]::GetFolderPath('Desktop') (SHGetFolderPath CSIDL_DESKTOP).

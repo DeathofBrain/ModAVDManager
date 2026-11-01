@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,6 +126,7 @@ type fixture struct {
 	sc      *scenario
 	base    string
 	root    string
+	env     map[string]string
 	adb     *fakeAdb
 	adbPort int
 	host    *fakeHost
@@ -243,20 +245,35 @@ func newFixture(t *testing.T, name, base, rootRel string) *fixture {
 	sc := loadScenario(t, name, base, rootRel, adb.port())
 	root := filepath.Join(base, sc.Root)
 	buildFiles(t, sc, base, root)
+	env := map[string]string{}
+	for k, v := range sc.Env {
+		if m := shortEnv.FindStringSubmatch(v); m != nil {
+			dir := filepath.Join(base, m[1])
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			s := shortName(t, dir)
+			if s == "" {
+				t.Skipf("scenario %s: no 8.3 short name for %s on this volume", name, dir)
+			}
+			v = s + m[2]
+		}
+		env[k] = filepath.Join(base, v)
+	}
 	now, err := time.ParseInLocation(wallClock, sc.Now, time.Local)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{sc: sc, base: base, root: root, adb: adb, adbPort: adb.port(), host: &fakeHost{sc: sc}, now: now}
+	return &fixture{sc: sc, base: base, root: root, env: env, adb: adb, adbPort: adb.port(), host: &fakeHost{sc: sc},
+		now: now}
 }
 
+// shortEnv is an environment value "<dir>\rest" of a scenario: dir (directly under base) by its 8.3 short name, the
+// way %TEMP% is C:\Users\ADMINI~1\AppData\Local\Temp while %LOCALAPPDATA% is C:\Users\Administrator\AppData\Local.
+var shortEnv = regexp.MustCompile(`^<([^>]+)>(.*)$`)
+
 // getenv is the scenario's environment (LOCALAPPDATA, TEMP under base).
-func (f *fixture) getenv(k string) string {
-	if v, ok := f.sc.Env[k]; ok {
-		return filepath.Join(f.base, v)
-	}
-	return ""
-}
+func (f *fixture) getenv(k string) string { return f.env[k] }
 
 // ---- the fake host --------------------------------------------------------------------------------------------
 
