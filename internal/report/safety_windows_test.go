@@ -52,11 +52,36 @@ func TestCollectNeverTakesDiskImagesOrMasData(t *testing.T) {
 			t.Fatalf("fixture lacks %s", p)
 		}
 	}
-	_, names, files := runCollect(t, f)
+	res, err := collect(context.Background(), f.root, f.host, CollectOptions{
+		OutDir: filepath.Join(f.base, "out"), StageDir: filepath.Join(f.base, "stage"), NoExplorer: true, KeepStage: true,
+		now: func() time.Time { return f.now }, getenv: f.getenv, pid: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, files := readZip(t, res.ZipPath)
 	if !hasEntryPrefix(names, "mas/") || !hasEntryPrefix(names, "avd/mas_1.avd/") {
 		t.Fatalf("nothing collected: %q", names)
 	}
-	for _, n := range names {
+	// not even copied into the stage directory (the zip leaves them out once more)
+	if !res.StageKept {
+		t.Fatal("stage not kept")
+	}
+	var staged []string
+	err = filepath.WalkDir(res.Stage, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(res.Stage, p)
+			staged = append(staged, filepath.ToSlash(rel))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != len(names) {
+		t.Errorf("staged %q, zipped %q", staged, names)
+	}
+	for _, n := range append(names, staged...) {
 		l := strings.ToLower(n)
 		if strings.HasSuffix(l, ".img") || strings.HasSuffix(l, ".qcow2") || strings.Contains(l, "snapshots") ||
 			strings.Contains(l, "userdata") || strings.Contains(l, "ram.bin") || strings.Contains(l, "accounts") ||
@@ -79,6 +104,36 @@ func TestCollectNeverTakesDiskImagesOrMasData(t *testing.T) {
 type panicHost struct{ *fakeHost }
 
 func (panicHost) AppEvents(context.Context) ([]AppEvent, error) { panic("boom") }
+
+// report-config reads the emulator of mas-avd.json's sdkRoot when it is set, as the backend runs it.
+func TestReportConfigUsesSdkRoot(t *testing.T) {
+	useGoldenZone(t, "full")
+	f := newFixture(t, "full", testTempDir(t), "")
+	guardDials(t, f.adbPort)
+	alt := filepath.Join(f.base, "dev-sdk")
+	for name, text := range map[string]string{
+		filepath.Join(alt, "emulator", "source.properties"):  "Pkg.BuildId=mas-77\n",
+		filepath.Join(alt, "emulator", "emulator-check.exe"): "MZ",
+		filepath.Join(f.root, root.MetadataFile):             `{"sdkRoot": " ` + jsonEscape(alt) + ` "}`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := BuildConfig(context.Background(), &root.Root{Dir: f.root}, ConfigOptions{Host: f.host, NoClipboard: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.EmulatorBuild != "mas-77" || res.Acceleration != "WHPX(10.0.26200) 可用" {
+		t.Errorf("emulator %q, acceleration %q", res.EmulatorBuild, res.Acceleration)
+	}
+	if ps := f.host.programs(); len(ps) != 1 || !strings.EqualFold(ps[0], filepath.Join(alt, "emulator", "emulator-check.exe")) {
+		t.Errorf("ran %q", ps)
+	}
+}
 
 func TestCollectSectionFailureContinues(t *testing.T) {
 	useGoldenZone(t, "full")

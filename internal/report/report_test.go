@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"modavd/internal/jsonord"
 )
 
 func TestFormatN(t *testing.T) {
@@ -45,6 +47,38 @@ func TestCultureSort(t *testing.T) {
 	sortCulture(got)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+// mas-avd.json's adbServerPort as collect-info.ps1's Resolve-MetadataPort takes it, and as its summary line shows a
+// value it does not take (ConvertTo-Json -Compress).
+func TestScriptPort(t *testing.T) {
+	for raw, want := range map[string]int{
+		`20068`: 20068, `"20068"`: 20068, `" 20068 "`: 20068, `20068.9`: 20068, `"+20068"`: 20068, `20052`: 20052,
+		`20050`: 20050, `20010`: 0, `20012`: 0, `20092`: 0, `20093`: 20093, `1023`: 0, `1024`: 1024, `65535`: 65535,
+		`65536`: 0, `5037`: 0, `"5037"`: 0, `true`: 0, `"0x4E84"`: 0, `"20068.0"`: 0, `null`: 0, `[20068]`: 0, `{}`: 0,
+	} {
+		v, err := jsonord.Parse([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := scriptPort(v)
+		if !ok {
+			got = 0
+		}
+		if got != want {
+			t.Errorf("%s: %d, want %d", raw, got, want)
+		}
+	}
+	for raw, want := range map[string]string{`"5037"`: `"5037"`, `5037`: `5037`, `1.5e3`: `1500`, `[1]`: `1`,
+		`[1,"a<b"]`: `[1,"a\u003cb"]`, `true`: `true`, `null`: ``, `{"a":1}`: `{"a":1}`} {
+		v, err := jsonord.Parse([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := psJSON(v); got != want {
+			t.Errorf("psJSON(%s) = %s, want %s", raw, got, want)
+		}
 	}
 }
 

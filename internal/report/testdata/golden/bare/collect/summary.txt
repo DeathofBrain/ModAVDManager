@@ -51,7 +51,7 @@ Microsoft-Hyper-V-All：InstallState=（未知）
 
 == 模拟器崩溃转储 ==
 收集范围：仅 ModAVD 的 emu-crash-<version>-mas.db；近 7 天内最新 3 份
-近 7 天没有
+{{BASE}}\lad\Temp\AndroidEmulator\emu-crash-37.2.12-mas.db\reports\new.dmp  2026-01-08 12:00:00  200 B
 
 == AUTO-MAS ==
 没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志

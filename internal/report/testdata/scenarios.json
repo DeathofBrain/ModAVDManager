@@ -229,8 +229,8 @@
     "adb": {"devices": "", "serials": {}},
     "files": [
       {"path": "root/mas-avd.json", "text": "{\"adbServerPort\": \"5037\", \"sdkRoot\": \" {{BASE_J}}\\\\nosdk \", \"instances\": {\"2\": {\"memoryMb\": 3072.5}, \"10\": {}, \"1\": {\"memoryMb\": \"4096\"}}}"},
-      {"path": "tmp", "dir": true},
-      {"path": "lad", "dir": true}
+      {"path": "tmp/AndroidEmulator/emu-crash-37.2.10-mas.db/reports/old.dmp", "size": 300, "mtime": "2026-01-08 11:59:59"},
+      {"path": "lad/Temp/AndroidEmulator/emu-crash-37.2.12-mas.db/reports/new.dmp", "size": 200, "mtime": "2026-01-08 12:00:00"}
     ]
   }
 }
