@@ -64,8 +64,10 @@ var bridgeQemuGoneWait = 30 * time.Second
 // install it themselves).
 const bridgeMetaKey = "bridge"
 
-func (m *Manager) bridgeWanted(i int) bool {
-	if !bridgeGuestSupported(m.Root, i) {
+// bridgeWanted: instance i, whose config.ini the caller already read (cfg, avd.Instance.Config), gets the bridge on
+// its starts. Never for an arm64 guest (bridgeGuestSupported); otherwise unless instances.<i>.bridge is false.
+func (m *Manager) bridgeWanted(i int, cfg *avd.Ini) bool {
+	if !bridgeGuestSupported(cfg) {
 		return false
 	}
 	meta := m.Root.InstanceMeta(i)
@@ -89,21 +91,18 @@ func (m *Manager) setBridgeWanted(i int, on bool) error {
 
 func bridgeMarker(r *root.Root, i int) string { return filepath.Join(avd.Dir(r, i), bridgeMarkerName) }
 
-// bridgeGuestSupported limits the Windows PowerShell bridge to x86_64 guests.
-// Existing and externally-created arm64 AVDs are left alone; a missing or
-// unreadable config remains conservative and keeps the historical behavior.
-func bridgeGuestSupported(r *root.Root, i int) bool {
-	b, err := os.ReadFile(avd.ConfigPath(r, i))
-	if err != nil {
-		return true
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		k, v = strings.TrimSpace(k), strings.ToLower(strings.TrimSpace(v))
-		if (k == "abi.type" || k == "hw.cpu.arch") && (v == "arm64" || v == "aarch64" || v == "arm64-v8a") {
+// bridgeGuestSupported limits the Windows PowerShell bridge to x86_64 guests: false when the instance's config.ini
+// (cfg, as avd parsed it) says abi.type or hw.cpu.arch is arm64 / arm64-v8a / aarch64, any case. Existing and
+// externally created arm64 AVDs are left alone. Keys that are missing, an unreadable config (avd.List gives it an
+// empty Ini) and nil all keep the historical x86_64 behaviour.
+//
+// It only looks at values already read: the read behind them (avd.ReadIni) shares delete, and status / info / list
+// call this on every poll, so a file opened here would stand in the way of AUTO-MAS deleting the instance (see
+// root.OpenShared).
+func bridgeGuestSupported(cfg *avd.Ini) bool {
+	for _, key := range []string{"abi.type", "hw.cpu.arch"} {
+		switch strings.ToLower(cfg.Value(key)) {
+		case "arm64", "arm64-v8a", "aarch64":
 			return false
 		}
 	}
@@ -222,13 +221,10 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 // the script's install, and a cold boot (same window and timeout, without this step) whenever the bridge has not taken
 // effect yet. A script that fails is only a warning: the instance keeps running, arm64 apps on the stock translator,
 // and the next start tries again. A cold boot that fails is the start's error (the instance is off or half up then).
-// Returns the result of the last start.
+// Returns the result of the last start. Start calls it only when bridgeWanted, which already leaves arm64 guests out.
 func (m *Manager) finishBridge(ctx context.Context, i int, opt StartOptions, res *StartResult) (*StartResult, error) {
 	if err := requireWindows(); err != nil {
 		return res, err
-	}
-	if !bridgeGuestSupported(m.Root, i) {
-		return res, nil
 	}
 	// Two starts of one instance (CLI, MCP, the manager) must not install at the same time: the second one leaves it.
 	lock, ok, err := win.TryLock(m.lockPath(i, "bridge"))
@@ -347,13 +343,14 @@ func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResu
 	if err := requireWindows(); err != nil {
 		return nil, err
 	}
-	if _, err := m.instance(i); err != nil {
+	in, err := m.instance(i)
+	if err != nil {
 		return nil, err
 	}
 	if err := m.notCreated(i, "不能装卸执行桥"); err != nil {
 		return nil, err
 	}
-	if !bridgeGuestSupported(m.Root, i) {
+	if !bridgeGuestSupported(in.Config) {
 		if action == "uninstall" {
 			if err := m.setBridgeWanted(i, false); err != nil {
 				return nil, err

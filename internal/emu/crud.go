@@ -98,7 +98,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*InstanceInfo,
 		info := m.instanceInfo(ctx, in, nil, nil)
 		return &info, nil
 	}
-	return m.setupNew(ctx, i, req, lock)
+	return m.setupNew(ctx, i, in.Config, req, lock)
 }
 
 // FreeIndex is the index Create picks when none is given (the manager names its create job after it).
@@ -148,7 +148,8 @@ func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest) (*Instanc
 		return nil, errs.New(errs.Usage, "--resume 要给实例编号")
 	}
 	i := *req.Index
-	if _, err := m.instance(i); err != nil {
+	in, err := m.instance(i)
+	if err != nil {
 		return nil, err
 	}
 	lock, err := m.tryInstanceLock(i, "create", "正在新建")
@@ -166,7 +167,7 @@ func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest) (*Instanc
 		return nil, errs.Newf(errs.Busy, "魔改 AVD 实例 %d 的模拟器还开着", i).
 			WithAdvice(fmt.Sprintf("先 modavd stop %d，再重试", i))
 	}
-	return m.setupNew(ctx, i, req, lock)
+	return m.setupNew(ctx, i, in.Config, req, lock)
 }
 
 // Update changes title / memory / cpu / fps / data partition size (next boot).
