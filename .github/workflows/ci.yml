@@ -45,7 +45,9 @@ jobs:
         shell: pwsh
         run: |
           $env:GOOS = 'darwin'; $env:GOARCH = 'arm64'; go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'go vet darwin/arm64 failed' }
           $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'go vet linux/amd64 failed' }
       - name: build
         shell: pwsh
         run: |
@@ -87,7 +89,7 @@ jobs:
         id: go
         shell: bash
         run: |
-          v=$(sed -n 's/^toolchain[[:space:]]\+go//p' go.mod | head -n 1)
+          v=$(sed -nE 's/^toolchain[[:space:]]+go//p' go.mod | head -n 1)
           test -n "$v"
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

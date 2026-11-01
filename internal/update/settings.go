@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"modavd/internal/errs"
@@ -43,6 +44,9 @@ var cdkEntropy = []byte("ModAVD update: MirrorChyan CDK")
 
 // settingsPath is %LOCALAPPDATA%\ModAVD\update-settings.json; a variable for the tests.
 var settingsPath = func() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
 	base := os.Getenv("LOCALAPPDATA")
 	if base == "" {
 		base = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
@@ -54,7 +58,11 @@ var settingsPath = func() string {
 // (another user's file, a copied profile) counts as none.
 func LoadSettings() Settings {
 	s := Settings{Source: SourceGitHub}
-	b, err := os.ReadFile(settingsPath())
+	path := settingsPath()
+	if path == "" {
+		return s
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return s
 	}
@@ -76,6 +84,9 @@ func LoadSettings() Settings {
 // SaveSettings changes the source (when not "") and the CDK (when cdk is not nil; "" clears it).
 func SaveSettings(source string, cdk *string) (Settings, error) {
 	s := LoadSettings()
+	if runtime.GOOS != "windows" {
+		return s, errs.New(errs.Unsupported, "当前平台暂不支持保存更新设置")
+	}
 	switch source {
 	case "":
 	case SourceGitHub, SourceMirrorChyan:

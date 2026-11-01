@@ -23,6 +23,8 @@ func ansiCodePage() uint32 {
 	cp, _, _ := procGetACP.Call()
 	return uint32(cp)
 }
+
+// decodeCodePage converts b from code page cp, failing on any invalid sequence.
 func decodeCodePage(cp uint32, b []byte) (string, bool) {
 	if len(b) == 0 {
 		return "", true

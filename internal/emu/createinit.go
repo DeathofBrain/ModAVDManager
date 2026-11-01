@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"modavd/internal/avd"
 	"modavd/internal/errs"
 	"modavd/internal/jsonord"
 	"modavd/internal/win"
@@ -156,8 +157,8 @@ func (p *createProgress) boot(ev Progress) {
 }
 
 // setupNew is the setup of a new instance (or a retry of one that failed); the create lock is held by the caller and
-// released here.
-func (m *Manager) setupNew(ctx context.Context, i int, req CreateRequest, lock *win.FileLock) (*InstanceInfo, error) {
+// released here. cfg is the instance's config.ini as the caller read it.
+func (m *Manager) setupNew(ctx context.Context, i int, cfg *avd.Ini, req CreateRequest, lock *win.FileLock) (*InstanceInfo, error) {
 	defer lock.Unlock()
 	if err := m.setCreation(i, creationCreating, "", ""); err != nil {
 		return nil, err
@@ -169,7 +170,7 @@ func (m *Manager) setupNew(ctx context.Context, i int, req CreateRequest, lock *
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	prog := &createProgress{fn: req.Progress}
-	bridge := m.bridgeWanted(i)
+	bridge := m.bridgeWanted(i, cfg)
 	what := "开机设置、宿主输入法、首次初始化"
 	if bridge {
 		what += "、arm64 执行桥"

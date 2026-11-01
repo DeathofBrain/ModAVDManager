@@ -313,11 +313,8 @@ func removeBestEffort(p string) bool {
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist)
 	}
-	if isReparsePoint(st) {
-		if removeLink(p) {
-			return true
-		}
-		return true
+	if isReparsePointFunc(st) {
+		return removeLinkFunc(p)
 	}
 	if st.IsDir() {
 		entries, _ := os.ReadDir(p)
@@ -337,6 +334,12 @@ func removeBestEffort(p string) bool {
 	}
 	return true
 }
+
+// removeLinkFunc is a test seam for the invariant that a reparse point is gone
+// only when removing the link itself succeeds.
+var removeLinkFunc = removeLink
+
+var isReparsePointFunc = isReparsePoint
 
 // removeTree empties and removes dir (gone already is fine); links inside are not followed.
 func removeTree(dir string) error {

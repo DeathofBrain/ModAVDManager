@@ -254,7 +254,7 @@ func (m *Manager) findLogcatProcesses(serial string) ([]win.Process, error) {
 	port := strconv.Itoa(m.Root.AdbServerPort())
 	var found []win.Process
 	for _, p := range procs {
-		if !strings.EqualFold(p.Name, root.CurrentPlatform().ADB) && !strings.EqualFold(p.Name, strings.TrimSuffix(root.CurrentPlatform().ADB, ".exe")) {
+		if !strings.EqualFold(p.Name, root.CurrentPlatform().ADB) {
 			continue
 		}
 		cmdline, err := p.CommandLine()
@@ -377,7 +377,7 @@ func (m *Manager) privateServerProcess() win.Process {
 		return win.Process{}
 	}
 	p, ok := win.FindProcess(pid)
-	if !ok || (!strings.EqualFold(p.Name, root.CurrentPlatform().ADB) && !strings.EqualFold(p.Name, strings.TrimSuffix(root.CurrentPlatform().ADB, ".exe"))) {
+	if !ok || !strings.EqualFold(p.Name, root.CurrentPlatform().ADB) {
 		return win.Process{}
 	}
 	return p
