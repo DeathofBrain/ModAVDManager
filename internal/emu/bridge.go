@@ -175,8 +175,8 @@ func (m *Manager) runBridgeScript(ctx context.Context, i int, action string, reb
 	}
 	command := "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + strings.Join(call, " ") + "; exit $LASTEXITCODE"
 	psRoot := os.Getenv("SystemRoot")
-	if psRoot == "" {
-		return bridgeRun{Code: -1}, errs.New(errs.Unsupported, "找不到 Windows 系统目录，不能运行执行桥脚本")
+	if psRoot == "" || !filepath.IsAbs(psRoot) {
+		return bridgeRun{Code: -1}, errs.New(errs.Internal, "找不到 Windows 系统目录，不能运行执行桥脚本")
 	}
 	ps := filepath.Join(psRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
@@ -355,8 +355,10 @@ func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResu
 			if err := m.setBridgeWanted(i, false); err != nil {
 				return nil, err
 			}
-			if p := bridgeMarker(m.Root, i); regularFile(p) {
-				_ = os.Remove(p)
+			if p := bridgeMarker(m.Root, i); markerExists(p) {
+				if err := os.Remove(p); err != nil {
+					return nil, errs.Wrap(errs.Internal, err, "删不掉 arm64 客体残留的执行桥开机标记: "+p)
+				}
 			}
 		}
 		return &BridgeResult{Index: i, Action: action, ExitCode: 0, Message: "arm64 客体不需要执行桥", Warnings: []string{}}, nil
@@ -490,6 +492,11 @@ func (m *Manager) Bridge(ctx context.Context, i int, action string) (*BridgeResu
 		return res, nil
 	}
 	return nil, errs.Newf(errs.Usage, "只能是 install、uninstall 或 verify，收到「%s」", action)
+}
+
+func markerExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func (r *BridgeResult) fill(run bridgeRun) {

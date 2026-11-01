@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -63,7 +62,7 @@ type Updater struct {
 }
 
 func unsupportedUpdatePlatform() error {
-	if runtime.GOOS != "windows" {
+	if !root.CurrentPlatform().Windows() {
 		return errs.New(errs.Unsupported, "当前平台暂不支持更新")
 	}
 	return nil

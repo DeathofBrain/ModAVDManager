@@ -5,14 +5,14 @@ import (
 	"unicode/utf8"
 )
 
+// Code pages tried after UTF-8, in AUTO-MAS process_runner.ENCODINGS order: utf-8, utf-8-sig (the same result for
+// strict input), locale.getpreferredencoding() (the ANSI code page on Windows), gbk, gb18030.
 const (
 	cpUTF8    = 65001
 	cpGBK     = 936
 	cpGB18030 = 54936
 )
 
-// Code pages tried after UTF-8, in AUTO-MAS process_runner.ENCODINGS order: utf-8, utf-8-sig (the same result for
-// strict input), locale.getpreferredencoding() (the ANSI code page on Windows), gbk, gb18030.
 func DecodeOutput(b []byte) string { return decodeOutput(b) }
 
 // decodeOutput is AUTO-MAS decode_bytes: the first encoding that decodes b strictly, else Latin-1. adb prints UTF-8

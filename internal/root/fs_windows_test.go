@@ -43,6 +43,7 @@ func TestOpenSharedAllowsDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = plain.Close() })
 	if err := os.RemoveAll(inst); err == nil {
 		t.Fatal("rmtree went through a file held by os.Open: the test no longer shows anything")
 	}
@@ -53,6 +54,7 @@ func TestOpenSharedAllowsDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = f.Close() })
 	writeFile(t, target+".tmp", []byte("new"))
 	if err := os.Rename(target+".tmp", target); err != nil {
 		t.Logf("replace over a file open with delete sharing still fails (expected): %v", err)

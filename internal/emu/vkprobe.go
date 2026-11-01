@@ -99,7 +99,6 @@ func RunVulkanProbe(w io.Writer) int {
 	return 0
 }
 
-// winErrorText is Python's str(OSError) of a Win32 error: "[WinError 126] The specified module could not be found."
 func vkVersionText(raw uint32) string {
 	return fmt.Sprintf("%d.%d.%d", (raw>>22)&0x7F, (raw>>12)&0x3FF, raw&0xFFF)
 }
@@ -117,8 +116,6 @@ func vkParseProperties(b []byte) vkDevice {
 		VendorID:   binary.LittleEndian.Uint32(b[8:]),
 	}
 }
-
-// ---- parent side ---------------------------------------------------------------------------------------------------
 
 // vkProbe is a probe result as judged by vulkanItemFromProbe. ProbeError set = the probe could not run or gave no
 // result (AUTO-MAS {"probeError": ...}).

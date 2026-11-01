@@ -105,7 +105,15 @@ func TestPollTakesGuestArchFromListedConfig(t *testing.T) {
 			syscall.CloseHandle(h)
 			t.Fatal("os.ReadFile shares delete on this Go version: the test no longer shows anything")
 		}
-		return func() { syscall.CloseHandle(h) }
+		released := false
+		release := func() {
+			if !released {
+				syscall.CloseHandle(h)
+				released = true
+			}
+		}
+		t.Cleanup(release)
+		return release
 	}
 
 	for _, c := range []struct{ name, cfg, want string }{

@@ -42,6 +42,9 @@ func (m *Manager) qemuOf(i int) (win.Process, bool) {
 // (AUTO-MAS close_running_instances takes its targets from _scan_processes the same way). stop --all uses it: List
 // would first start the private server and ask every instance, up to 5 s each, out of a 30 s shutdown budget.
 func (m *Manager) Running(ctx context.Context) ([]int, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
 	}
@@ -66,6 +69,9 @@ func (m *Manager) Running(ctx context.Context) ([]int, error) {
 
 // List is every instance with its status (one process scan, getprop only for running ones).
 func (m *Manager) List(ctx context.Context) (*ListResult, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	insts, err := avd.List(m.Root)
 	if err != nil {
 		return nil, err
@@ -96,6 +102,9 @@ func (m *Manager) List(ctx context.Context) (*ListResult, error) {
 
 // Info is one instance. errs.NotFound when it does not exist.
 func (m *Manager) Info(ctx context.Context, i int) (*InstanceInfo, error) {
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	in, err := m.instance(i)
 	if err != nil {
 		return nil, err

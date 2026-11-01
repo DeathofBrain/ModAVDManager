@@ -45,103 +45,101 @@ type FileLock struct{}
 // HideConsoleCmd is a no-op because non-Windows has no CREATE_NO_WINDOW flag.
 func HideConsoleCmd(*exec.Cmd) {}
 
-// ListProcesses cannot inspect the Windows process table on this host.
+// ListProcesses uses CreateToolhelp32Snapshot and Process32First/Next on Windows.
 func ListProcesses() ([]Process, error) { return nil, errUnsupported }
 
-// FindProcess cannot resolve Windows process ids on this host.
+// FindProcess resolves a PID from the Windows process snapshot and checks its identity.
 func FindProcess(uint32) (Process, bool) { return Process{}, false }
 
-// ProcessName has no Windows process table to query on this host.
+// ProcessName reads the executable name from the Windows process snapshot.
 func ProcessName(uint32) string { return "" }
 
-// CommandLine is unavailable without the Windows process APIs.
+// CommandLine opens the Windows process and reads its command line from the PEB.
 func (p Process) CommandLine() ([]string, error) { return nil, errUnsupported }
 
-// ImagePath is unavailable without the Windows process APIs.
+// ImagePath calls QueryFullProcessImageNameW on Windows.
 func (p Process) ImagePath() (string, error) { return "", errUnsupported }
 
-// StartedAt converts the Windows FILETIME value when a caller supplies one.
+// StartedAt is unavailable without the Windows process APIs. Returning zero
+// prevents a fabricated Unix timestamp from being reported as a process start.
 func (p Process) StartedAt() time.Time {
-	if p.Created == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, int64(p.Created)*100)
+	return time.Time{}
 }
 
-// Alive cannot inspect a Windows process on this host.
+// Alive compares the Windows process identity and checks its exit state.
 func (p Process) Alive() bool { return false }
 
-// Wait has nothing to wait for when the process cannot be observed.
+// Wait uses WaitForSingleObject on the Windows process handle.
 func (p Process) Wait(time.Duration) bool { return true }
 
-// ExitCode cannot inspect a Windows process on this host.
+// ExitCode calls GetExitCodeProcess on Windows.
 func (p Process) ExitCode() (uint32, bool) { return 0, false }
 
-// CPUTime cannot inspect a Windows process on this host.
+// CPUTime reads the Windows process kernel and user FILETIMEs.
 func (p Process) CPUTime() (time.Duration, bool) { return 0, false }
 
-// Kill cannot terminate a Windows process on this host.
+// Kill calls TerminateProcess on Windows.
 func (p Process) Kill() error { return errUnsupported }
 
-// KillTree cannot terminate a Windows process tree on this host.
+// KillTree enumerates child processes and terminates the Windows process tree.
 func KillTree(Process) error { return errUnsupported }
 
-// StartDetached requires the Windows detached process implementation.
+// StartDetached creates a Windows process with detached-console flags.
 func StartDetached(string, []string, StartOptions) (Process, error) { return Process{}, errUnsupported }
 
-// StartOrphan requires the Windows orphan helper implementation.
+// StartOrphan starts the Windows helper that adopts the child after its parent exits.
 func StartOrphan(string, []string, StartOptions) (Process, error) { return Process{}, errUnsupported }
 
-// SpawnHelperMain is only meaningful for the Windows helper process.
+// SpawnHelperMain is the Windows orphan helper's entry point.
 func SpawnHelperMain([]string, *os.File) int { return 1 }
 
-// TryLock requires Windows LockFileEx semantics.
+// TryLock takes a non-blocking Windows LockFileEx lock.
 func TryLock(string) (*FileLock, bool, error) { return nil, false, errUnsupported }
 
-// Lock requires Windows LockFileEx semantics.
+// Lock retries Windows LockFileEx until the timeout.
 func Lock(string, time.Duration) (*FileLock, bool, error) { return nil, false, errUnsupported }
 
-// Unlock is a no-op for the unavailable lock.
+// Unlock releases the Windows LockFileEx handle.
 func (l *FileLock) Unlock() {}
 
-// Listeners cannot inspect the Windows listener table on this host.
+// Listeners reads the Windows TCP table with GetExtendedTcpTable.
 func Listeners() ([]Listener, error) { return nil, errUnsupported }
 
-// ListenerPID cannot inspect the Windows listener table on this host.
+// ListenerPID finds the owning PID in the Windows TCP table.
 func ListenerPID(int) (uint32, bool, error) { return 0, false, errUnsupported }
 
-// BusyPorts cannot inspect the Windows listener table on this host.
+// BusyPorts compares requested ports with the Windows TCP and UDP tables.
 func BusyPorts([]int) ([]int, error) { return nil, errUnsupported }
 
-// SetAboveNormalPriority requires Windows process handles.
+// SetAboveNormalPriority calls SetPriorityClass with ABOVE_NORMAL_PRIORITY_CLASS.
 func SetAboveNormalPriority(Process) error { return errUnsupported }
 
-// SetAffinity requires Windows process handles.
+// SetAffinity calls SetProcessAffinityMask on Windows.
 func SetAffinity(Process, uint64) error { return errUnsupported }
 
-// BigL3CPUs requires Windows CPU topology APIs.
+// BigL3CPUs uses GetLogicalProcessorInformationEx to find large shared L3 caches.
 func BigL3CPUs() (uint64, []int, bool) { return 0, nil, false }
 
-// SharedMemoryExists checks a Windows named mapping; it is unavailable here.
+// SharedMemoryExists calls OpenFileMappingW for the Windows named mapping.
 func SharedMemoryExists(string) bool { return false }
 
-// DiskFree requires Windows volume APIs.
+// DiskFree calls GetDiskFreeSpaceExW for the Windows volume.
 func DiskFree(string) (uint64, error) { return 0, errUnsupported }
 
-// AvailableMemoryMB requires Windows memory APIs.
+// AvailableMemoryMB calls GlobalMemoryStatusEx on Windows.
 func AvailableMemoryMB() (uint64, error) { return 0, errUnsupported }
 
-// Protect requires Windows DPAPI.
+// Protect calls CryptProtectData (DPAPI) for the current Windows user.
 func Protect([]byte, []byte) ([]byte, error) { return nil, errUnsupported }
 
-// Unprotect requires Windows DPAPI.
+// Unprotect calls CryptUnprotectData (DPAPI) for the current Windows user.
 func Unprotect([]byte, []byte) ([]byte, error) { return nil, errUnsupported }
 
-// SetEmulatorWindowsVisible requires Windows window APIs.
+// SetEmulatorWindowsVisible finds the emulator window and calls ShowWindow on Windows.
 func SetEmulatorWindowsVisible(uint32, string, bool) (int, error) { return 0, errUnsupported }
 
-// GetConsoleWindow has no Windows console to query here.
+// GetConsoleWindow calls the Windows GetConsoleWindow API.
 func GetConsoleWindow() uintptr { return 0 }
 
-// MessageBox requires the Windows user32 message box API.
+// MessageBox calls MessageBoxW from Windows user32.
 func MessageBox(string) error { return errors.New("当前平台暂不支持消息框") }
