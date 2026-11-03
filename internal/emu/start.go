@@ -57,6 +57,10 @@ func (p *progressor) emit(step, msg string, done int) {
 	p.fn(Progress{Step: step, Message: msg, Done: done, Total: progressTotal})
 }
 
+// startFindQemu is how Start looks for the instance's qemu (m.findQemu, always the real scan); a test replaces it to
+// have Start find one running.
+var startFindQemu = (*Manager).findQemu
+
 // Start boots instance i (or adopts it when already running), runs the per-boot setup and, once, the first-boot
 // setup, and returns when the instance is online. See StartOptions / StartResult.
 //
@@ -187,7 +191,7 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 		var bootLock *win.FileLock
 		var adoptedAt time.Time
 		stopSeen := false // a stop of this instance held its lock while this round waited for an adopted qemu
-		p, running := m.findQemu(i)
+		p, running := startFindQemu(m, i)
 		if w := opt.watchQemu; w != nil && (!running || p.PID != w.PID || p.Created != w.Created) {
 			// the watched qemu is gone (or replaced): a boot watch never launches an emulator
 			return nil, errs.Newf(errs.LaunchFailed, "实例 %d 的模拟器（pid %d）已不在运行", i, w.PID)
@@ -196,6 +200,15 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 			var err error
 			if p, running, err = m.waitShutdown(ctx, i, p, prog); err != nil {
 				return nil, err
+			}
+		}
+		// no switch between window and headless while it runs (StartOptions.Window); when that cannot be told, it is
+		// adopted as it runs
+		if running && opt.watchQemu == nil {
+			if windowed, known := qemuWindowed(p); known {
+				if err := windowConflict(i, opt, windowed); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if running {
