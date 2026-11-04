@@ -135,6 +135,15 @@ func SharedMemoryExists(string) bool { return false }
 // DiskFree calls GetDiskFreeSpaceExW for the Windows volume.
 func DiskFree(string) (uint64, error) { return 0, errUnsupported }
 
+// GetCompressedFileSize calls GetCompressedFileSizeW for the Windows file.
+func GetCompressedFileSize(string) (uint64, error) { return 0, errUnsupported }
+
+// VolumeFileSystem calls GetVolumePathNameW + GetVolumeInformationW on Windows.
+func VolumeFileSystem(string) (string, error) { return "", errUnsupported }
+
+// MoveFileReplaceThrough calls MoveFileExW (REPLACE_EXISTING | WRITE_THROUGH).
+func MoveFileReplaceThrough(string, string) error { return errUnsupported }
+
 // AvailableMemoryMB calls GlobalMemoryStatusEx on Windows.
 func AvailableMemoryMB() (uint64, error) { return 0, errUnsupported }
 

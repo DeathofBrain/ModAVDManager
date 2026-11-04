@@ -68,6 +68,9 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 | `start <i> [--window \| --headless] [--timeout 300] [--no-bridge]` | 开机（默认无头，`--window` 带窗口），等开完并做完开机后的设置，返回前确认 `/sdcard` 能写进文件（一般这时早已就绪；最多再等 60 秒，到点只警告）；实例正在关机时（比如刚点了模拟器窗口的 ×）先等它关完（最多 30 秒）再开机；实例还没有执行桥时接着装上，`--no-bridge` 这次不装。运行中不换方式：实例已经在运行时，给了 `--window` / `--headless` 而它不是这种方式，就报错（退出码 5），不接管也不重启，要换先 `stop` 再 `start`；两个都不给就照原样接管 |
 | `stop <i> [--force]`、`stop --all` | 关机：前台开着应用时先按 HOME，等 2 秒让它保存；再 sync，让安卓正常关机（前台应用先收到暂停、停止），不成再 sync + kill；`--force` 是 sync + 强杀 |
 | `bridge <i> install\|uninstall\|verify` | 装、卸、检查 arm64 执行桥；开机时会自动装，一般不用手动跑（见下） |
+| `disk <i> trim` | 磁盘回收：在开着的实例里对数据盘触发一次 FITRIM，让模拟器释放已删文件占着的空间；模拟器太旧、不支持回收时返回不支持（退出码 4） |
+| `disk <i> info` | 看数据盘的大小：逻辑大小、覆盖层在宿主上实际占的空间；实例关机时再给已分配的大小和估计能回收多少（开着时这两个数要关机后才有）；只读 |
+| `disk <i> compact` | 整理数据盘：关机状态下把覆盖层重写一遍、丢掉已释放的簇、把文件缩小；转换后先校验再原子替换，原盘在替换成功前不动；仅在 NTFS/ReFS 卷上进行，实例有快照、或剩余空间不够放下新文件时拒绝 |
 | `check [--memory M]` | 开机前的电脑检查 |
 | `report-config [--no-clipboard]` | 复制电脑配置和开着实例里的游戏信息（只读） |
 | `collect-info [--out-dir D] [--stage-dir D] [--keep-stage] [--no-explorer]` | 收集问题信息并打包（只读） |
@@ -134,7 +137,7 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 modavd mcp --root D:\ModAVD
 ```
 
-同时支持 MCP 2026-07-28（无状态，`server/discover`）和 2025-11-25 / 2025-06-18（`initialize` 握手）。根目录在启动时定，不是工具参数。工具：`list_instances`、`get_instance`、`check_host`、`create_instance`、`update_instance`、`delete_instance`、`start_instance`（带进度）、`stop_instance`、`set_window_visible`、`shell`、`install_apk`。
+同时支持 MCP 2026-07-28（无状态，`server/discover`）和 2025-11-25 / 2025-06-18（`initialize` 握手）。根目录在启动时定，不是工具参数。工具：`list_instances`、`get_instance`、`check_host`、`create_instance`、`update_instance`、`delete_instance`、`start_instance`（带进度）、`stop_instance`、`set_window_visible`、`shell`、`install_apk`、`disk_info`（数据盘大小）、`trim_disk`（开机态回收空间，模拟器要支持 discard）、`compact_disk`（关机态整理数据盘，实例须已关机）。
 
 在 Claude Code 里注册（PowerShell 里 `--` 要加引号，否则会被吞掉）：
 
