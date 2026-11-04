@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"modavd/internal/appproxy"
 	"modavd/internal/emu"
 	"modavd/internal/errs"
 	"modavd/internal/logx"
@@ -29,8 +30,10 @@ type fake struct {
 	updates []emu.UpdateRequest
 	starts  []emu.StartOptions
 	stops   []emu.StopOptions
-	shells  []string
-	timeout time.Duration
+	// proxySets are the changes set_app_proxy passed
+	proxySets []appproxy.Change
+	shells    []string
+	timeout   time.Duration
 
 	start  func(ctx context.Context, i int, opt emu.StartOptions) (*emu.StartResult, error)
 	create func(ctx context.Context, req emu.CreateRequest) (*emu.InstanceInfo, error)
@@ -213,6 +216,20 @@ func (f *fake) DiskCompact(ctx context.Context, i int) (*emu.DiskCompactResult, 
 	f.record("disk compact %d", i)
 	return &emu.DiskCompactResult{Index: i, Overlay: fmt.Sprintf(`D:\r1\avd\mas_%d.avd\userdata-qemu.img.qcow2`, i),
 		BeforeOnDiskBytes: 12 << 30, AfterOnDiskBytes: 8 << 30, FreedBytes: 4 << 30}, nil
+}
+
+func (f *fake) AppProxy(ctx context.Context, i int) (*emu.AppProxyResult, error) {
+	f.record("app_proxy %d", i)
+	return &emu.AppProxyResult{Index: i, Apps: []string{}, Notes: []string{}}, nil
+}
+
+func (f *fake) SetAppProxy(ctx context.Context, i int, c appproxy.Change) (*emu.AppProxyResult, error) {
+	f.mu.Lock()
+	f.proxySets = append(f.proxySets, c)
+	f.mu.Unlock()
+	f.record("set_app_proxy %d", i)
+	return &emu.AppProxyResult{Index: i, Enabled: true, Server: "socks5://10.0.2.2:7890", Apps: []string{"a.b"},
+		Notes: []string{}, Applied: "now", Guest: &appproxy.Status{Running: true, Apps: []appproxy.AppStatus{}}}, nil
 }
 
 // fakeConn is what one tool call gets: the shared fake plus that call's logger.
@@ -499,7 +516,7 @@ func TestLegacySession(t *testing.T) {
 			t.Fatalf("legacy tools/list has %s", k)
 		}
 	}
-	if n := len(r["tools"].([]any)); n != 14 {
+	if n := len(r["tools"].([]any)); n != 16 {
 		t.Fatalf("%d tools", n)
 	}
 
@@ -564,7 +581,7 @@ func TestModernSession(t *testing.T) {
 
 	r := result(t, h.request(1, "tools/list", modernParams(nil, nil)))
 	if r["resultType"] != "complete" || r["ttlMs"] != float64(listTTLMs) || r["cacheScope"] != "public" ||
-		r["_meta"] == nil || len(r["tools"].([]any)) != 14 {
+		r["_meta"] == nil || len(r["tools"].([]any)) != 16 {
 		t.Fatalf("tools/list %v", r)
 	}
 
@@ -765,6 +782,10 @@ func TestToolCalls(t *testing.T) {
 		{"disk_info", map[string]any{"index": 1}, "disk info 1"},
 		{"trim_disk", map[string]any{"index": 1}, "disk trim 1"},
 		{"compact_disk", map[string]any{"index": 1}, "disk compact 1"},
+		{"get_app_proxy", map[string]any{"index": 2}, "app_proxy 2"},
+		{"set_app_proxy", map[string]any{"index": 2, "enabled": true, "server": "auto", "add_apps": []string{"a.b"}},
+			"set_app_proxy 2"},
+		{"set_app_proxy", map[string]any{"index": 2, "apps": []string{}, "remove_apps": []string{"c.d"}}, "set_app_proxy 2"},
 	}
 	for n, c := range cases {
 		tool := tools[c.name]
@@ -820,6 +841,14 @@ func TestToolCalls(t *testing.T) {
 	}
 	if f.timeout != 10*time.Second {
 		t.Fatalf("shell timeout %v", f.timeout)
+	}
+	if p := f.proxySets[0]; !*p.Enabled || *p.Server != "auto" || p.Apps != nil || !reflect.DeepEqual(p.Add, []string{"a.b"}) {
+		t.Fatalf("set_app_proxy change %+v", p)
+	}
+	// an empty apps array is "clear the list", not "leave it"
+	if p := f.proxySets[1]; p.Enabled != nil || p.Server != nil || p.Apps == nil || len(*p.Apps) != 0 ||
+		!reflect.DeepEqual(p.Remove, []string{"c.d"}) {
+		t.Fatalf("set_app_proxy change %+v", p)
 	}
 }
 
@@ -1124,7 +1153,7 @@ func TestCancelStart(t *testing.T) {
 	<-started
 
 	// the read loop is free while the instance boots
-	if r := result(t, h.request(2, "tools/list", nil)); len(r["tools"].([]any)) != 14 {
+	if r := result(t, h.request(2, "tools/list", nil)); len(r["tools"].([]any)) != 16 {
 		t.Fatal("tools/list during boot")
 	}
 
@@ -1406,7 +1435,7 @@ func TestWaitsForManagerAfterCall(t *testing.T) {
 func TestKeptTools(t *testing.T) {
 	for _, tool := range toolDefs() {
 		want := tool.Name == "create_instance" || tool.Name == "update_instance" || tool.Name == "delete_instance" ||
-			tool.Name == "install_apk" || tool.Name == "compact_disk"
+			tool.Name == "install_apk" || tool.Name == "compact_disk" || tool.Name == "set_app_proxy"
 		if tool.keep != want {
 			t.Errorf("%s: keep %v", tool.Name, tool.keep)
 		}
@@ -1466,7 +1495,7 @@ func TestToolDefinitions(t *testing.T) {
 	}
 	want := []string{"list_instances", "get_instance", "check_host", "create_instance", "update_instance",
 		"delete_instance", "start_instance", "stop_instance", "set_window_visible", "shell", "install_apk",
-		"disk_info", "trim_disk", "compact_disk"}
+		"disk_info", "trim_disk", "compact_disk", "get_app_proxy", "set_app_proxy"}
 	if len(tools) != len(want) {
 		t.Fatalf("%d tools", len(tools))
 	}

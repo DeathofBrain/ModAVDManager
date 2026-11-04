@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"modavd/internal/appproxy"
 	"modavd/internal/buildinfo"
 	"modavd/internal/components"
 	"modavd/internal/emu"
@@ -203,6 +204,33 @@ func (f *fakeManager) EnsureServers(ctx context.Context) (*emu.ServersResult, er
 	return &emu.ServersResult{AdbServerPort: 20050, AdbServerUp: true, ScriptAdbServerPort: 20049}, nil
 }
 
+func (f *fakeManager) AppProxy(ctx context.Context, i int) (*emu.AppProxyResult, error) {
+	f.record("proxy " + itoa(i))
+	return &emu.AppProxyResult{Index: i, Apps: []string{}, Notes: []string{}}, nil
+}
+
+// SetAppProxy records the change as "proxy-set <i> on=<bool|-> server=<s|-> apps=<a,b|-> add=<..> remove=<..>".
+func (f *fakeManager) SetAppProxy(ctx context.Context, i int, c appproxy.Change) (*emu.AppProxyResult, error) {
+	on, server, apps := "-", "-", "-"
+	if c.Enabled != nil {
+		on = strconv.FormatBool(*c.Enabled)
+	}
+	if c.Server != nil {
+		server = *c.Server
+	}
+	if c.Apps != nil {
+		apps = strings.Join(*c.Apps, ",")
+	}
+	f.record("proxy-set " + itoa(i) + " on=" + on + " server=" + server + " apps=" + apps + " add=" +
+		strings.Join(c.Add, ",") + " remove=" + strings.Join(c.Remove, ","))
+	return &emu.AppProxyResult{Index: i, Apps: []string{}, Notes: []string{}, Applied: "next_boot"}, nil
+}
+
+func (f *fakeManager) TestAppProxy(ctx context.Context, i int) (*emu.AppProxyTestResult, error) {
+	f.record("proxy-test " + itoa(i))
+	return &emu.AppProxyTestResult{Index: i}, nil
+}
+
 func (f *fakeManager) Running(ctx context.Context) ([]int, error) {
 	f.record("running")
 	if f.running != nil {
@@ -379,7 +407,7 @@ func TestExitCodes(t *testing.T) {
 	codes := map[string]int{
 		errs.Usage: 2, errs.InvalidArgument: 2, errs.NotFound: 3, errs.NotReady: 4, errs.PrecheckFailed: 4,
 		errs.Unsupported: 4, errs.Busy: 5, errs.AlreadyExists: 5, errs.PortConflict: 5, errs.Timeout: 6,
-		errs.LaunchFailed: 7, errs.Canceled: 8, errs.Internal: 1, errs.MetadataUnreadable: 1,
+		errs.LaunchFailed: 7, errs.Canceled: 8, errs.Internal: 1, errs.MetadataUnreadable: 1, errs.ProxyUnavailable: 9,
 	}
 	for code, want := range codes {
 		for _, jsonMode := range []bool{false, true} {
