@@ -58,6 +58,7 @@ type Options struct {
 	openPath   func(path string) error
 	launch     func(url string) (*Window, error)
 	removeOld  func(log *logx.Logger) // removeOldEdgeProfile on AppDataDir
+	proxyEvery time.Duration
 }
 
 const (
@@ -92,7 +93,7 @@ type server struct {
 	removeOld  func(log *logx.Logger)
 	mux        *http.ServeMux
 
-	pollEvery, pingEvery, exitEvery, idleExit, closeGrace, stopWait time.Duration
+	pollEvery, pingEvery, exitEvery, idleExit, closeGrace, stopWait, proxyEvery time.Duration
 
 	// ctx ends with the server (event streams, screenshot captures); jobCtx only when Run's own context ends, since
 	// a closed window waits for running jobs.
@@ -108,6 +109,7 @@ type server struct {
 	shots shotCache
 	check checkCache
 	upd   *updatePanel // update.go
+	marks *proxyMarks  // proxy.go
 }
 
 func newServer(opt Options) (*server, error) {
@@ -164,7 +166,9 @@ func newServer(opt Options) (*server, error) {
 		idleExit:   idle,
 		closeGrace: windowCloseGrace,
 		stopWait:   startStopWait,
+		proxyEvery: proxyEvery,
 		hub:        newHub(),
+		marks:      newProxyMarks(),
 	}
 	if s.openPath == nil {
 		s.openPath = shellOpen
@@ -174,6 +178,9 @@ func newServer(opt Options) (*server, error) {
 	}
 	if s.removeOld == nil {
 		s.removeOld = func(l *logx.Logger) { removeOldEdgeProfile(AppDataDir(), l) }
+	}
+	if opt.proxyEvery > 0 {
+		s.proxyEvery = opt.proxyEvery
 	}
 	s.upd = &updatePanel{}
 	s.mgr = newBackend(lg.Tee(s.eventLogSink("")))
@@ -221,6 +228,7 @@ func Run(ctx context.Context, opt Options) error {
 		}
 	}()
 	go s.pollLoop()
+	go s.proxyLoop()
 	cleanUploads(s.log)
 
 	base := fmt.Sprintf("http://127.0.0.1:%d/", s.port)
