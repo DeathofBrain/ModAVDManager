@@ -436,6 +436,9 @@ func stopLine(r *emu.StopResult) string {
 
 func formatStop(w io.Writer, r *emu.StopResult) {
 	fmt.Fprintln(w, stopLine(r))
+	if r.InterruptedCreate {
+		fmt.Fprintf(w, "  已打断新建初始化，用 modavd create --resume %d 重做\n", r.Index)
+	}
 	writeWarnings(w, r.Warnings)
 }
 
@@ -641,7 +644,9 @@ func formatDiskInfo(w io.Writer, r *emu.DiskInfoResult) {
 	if r.LogicalBytes > 0 {
 		kv("数据盘逻辑大小", fmtBytesGB(r.LogicalBytes))
 	}
-	kv("覆盖层在宿主上占用", fmtBytesGB(r.OnDiskBytes))
+	if r.OnDiskBytes != nil {
+		kv("覆盖层在宿主上占用", fmtBytesGB(*r.OnDiskBytes))
+	}
 	if r.AllocatedBytes != nil {
 		kv("已分配（客体实际数据）", fmtBytesGB(*r.AllocatedBytes))
 	}
@@ -716,8 +721,8 @@ const helpTail = `
 
 <i> 写成 3 或 mas_3（0–9，5 除外）。内存写成 6144、6144M 或 6G。
 
-退出码：0 成功，1 内部错误，2 用法或参数不对，3 实例不存在，4 根目录没就绪、检查没通过或不支持，
-5 实例忙、已存在或端口被占，6 超时，7 启动失败，8 已取消（Ctrl+C）。
+退出码：0 成功，1 内部错误，2 用法或参数不对、未同意许可协议（license_declined），3 实例不存在，4 根目录没就绪、检查没通过或不支持，
+5 实例忙、已存在或端口被占，6 超时，7 启动失败，8 已取消（Ctrl+C），9 更新或组件下载不可用、校验未通过，或代理不可用。
 例外：shell 不带 --json 时是命令自己的退出码；adb 是 adb 的退出码；stop --all 有失败时是第一个失败的退出码。
 
 运行 modavd help <命令> 查看某个命令的说明和选项。

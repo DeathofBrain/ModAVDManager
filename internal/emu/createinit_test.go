@@ -5,6 +5,7 @@ package emu
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	"modavd/internal/errs"
 	"modavd/internal/jsonord"
+	"modavd/internal/testutil"
 	"modavd/internal/win"
 )
 
@@ -197,7 +199,8 @@ func TestCreateSetsUp(t *testing.T) {
 		_, e4 := m.Bridge(ctx, i, "verify")
 		j := i
 		_, e5 := m.Create(ctx, CreateRequest{Index: &j})
-		refused = []error{e1, e2, e3, e4, e5}
+		_, e6 := m.Stop(ctx, i, StopOptions{})
+		refused = []error{e1, e2, e3, e4, e5, e6}
 		return &StartResult{HostIME: true}, nil
 	}
 	h.install(t)
@@ -362,6 +365,43 @@ func TestCreateTimeout(t *testing.T) {
 	if _, err := m.Create(cctx, CreateRequest{Index: &i, Resume: true}); errs.CodeOf(err) != errs.Canceled || h.stopped != 1 ||
 		errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("canceled: %v, stopped %d", err, h.stopped)
+	}
+}
+
+// A bridge restart can embed Start's "emulator left running" advice in its error.
+// The creation's cleanup changes that fact, so its final error must describe the
+// state after cleanup, while retaining the original cause for diagnostics.
+func TestCreateCanceledReportsFinalShutdown(t *testing.T) {
+	for _, stopped := range []bool{true, false} {
+		t.Run(fmt.Sprint(stopped), func(t *testing.T) {
+			m, _ := opsTestManager(t)
+			startErr := errs.New(errs.Canceled, "装执行桥时关机再开机失败: 已取消。模拟器没有关：稍后再启动")
+			h := &createHooks{running: true}
+			h.start = func(*Manager, context.Context, int, StartOptions) (*StartResult, error) {
+				return nil, startErr
+			}
+			if !stopped {
+				h.stopErr = errs.New(errs.Timeout, "关机超时")
+			}
+			h.install(t)
+			i := 6
+			_, err := m.Create(context.Background(), CreateRequest{Index: &i})
+			if errs.CodeOf(err) != errs.Canceled || !errors.Is(err, startErr) || h.stopped != 1 {
+				t.Fatalf("create: %v; shutdown calls %d", err, h.stopped)
+			}
+			info, ierr := m.Info(context.Background(), i)
+			if ierr != nil || info.Status != StatusCreateFailed || info.Creation != creationFailed {
+				t.Fatalf("persisted state: %+v %v", info, ierr)
+			}
+			if stopped {
+				if strings.Contains(info.CreationError, "模拟器没有关") || !strings.Contains(info.CreationError, "已关机") ||
+					!strings.Contains(errs.As(err).Message, "已关机") {
+					t.Fatalf("stale startup state after successful cleanup: %q; %v", info.CreationError, err)
+				}
+			} else if strings.Contains(info.CreationError, "已关机") || info.CreationError != startErr.Message {
+				t.Fatalf("must not claim a failed cleanup stopped Android: %q", info.CreationError)
+			}
+		})
 	}
 }
 
@@ -570,7 +610,7 @@ func TestCreatePlanOfSetup(t *testing.T) {
 // TestCreateProgressBootLog: within the boot wait the emulator's log moves the bar, milestone by milestone, and
 // only there.
 func TestCreateProgressBootLog(t *testing.T) {
-	log := filepath.Join(t.TempDir(), "mas_6.log")
+	log := filepath.Join(testutil.TempDir(t), "mas_6.log")
 	write := func(s string) {
 		if err := os.WriteFile(log, []byte(s), 0o644); err != nil {
 			t.Fatal(err)
@@ -623,7 +663,7 @@ func TestCreateProgressBootLog(t *testing.T) {
 	if d := got[len(got)-1].Done; d != booted {
 		t.Fatalf("after the boot: %d, want %d", d, booted)
 	}
-	if bootLogShare(filepath.Join(t.TempDir(), "missing.log")) != 0 || bootLogShare("") != 0 {
+	if bootLogShare(filepath.Join(testutil.TempDir(t), "missing.log")) != 0 || bootLogShare("") != 0 {
 		t.Fatal("a missing log has milestones")
 	}
 }

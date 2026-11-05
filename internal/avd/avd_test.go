@@ -19,13 +19,14 @@ import (
 
 	"modavd/internal/errs"
 	"modavd/internal/root"
+	"modavd/internal/testutil"
 )
 
 // ---- helpers -----------------------------------------------------------------------------------------------------
 
 func newRoot(t *testing.T) *root.Root {
 	t.Helper()
-	r, err := root.New(t.TempDir())
+	r, err := root.New(testutil.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,9 +284,9 @@ func normJSON(t *testing.T, v any) any {
 func compareWithPython(t *testing.T, setup map[string]string, ops []refOp) {
 	t.Helper()
 	py := python(t)
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	resetTree(t, dir, setup)
-	jobDir := t.TempDir()
+	jobDir := testutil.TempDir(t)
 	job, err := json.Marshal(map[string]any{"root": dir, "ops": ops})
 	if err != nil {
 		t.Fatal(err)
@@ -479,6 +480,7 @@ func TestPropertiesMatchPython(t *testing.T) {
 
 // TestMatchesProductionInstance: an instance created here with the options of D:\ModAVD's mas_1 (made by AUTO-MAS
 // on 10-16; read only) is the same bytes. The template has changed once since: hw.mainKeys no -> yes (ModAVD #1).
+// New instances default to 1080p since ModAVD #100; mas_1 is 720p, so its resolution is passed like the others.
 func TestMatchesProductionInstance(t *testing.T) {
 	const prod = `D:\ModAVD`
 	prodIni, err1 := os.ReadFile(prod + `\avd\mas_1.ini`)
@@ -506,7 +508,7 @@ func TestMatchesProductionInstance(t *testing.T) {
 	}
 	r := newRoot(t)
 	created, err := Create(r, 1, CreateOptions{Title: title, MemoryMB: memory, CPU: cpu, DataPartitionGB: dataGB,
-		FPS: in.FPS()})
+		FPS: in.FPS(), Resolution: in.Resolution()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +564,7 @@ func TestIni(t *testing.T) {
 		t.Fatal("zero Ini")
 	}
 
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	path := filepath.Join(dir, "sub", "x.ini")
 	// The directory is never created (a deleted instance must not come back).
 	err := WriteIni(path, c)
@@ -1028,7 +1030,7 @@ func TestDelete(t *testing.T) {
 	writeFile(t, r.MetadataPath(), meta)
 
 	// A junction as the instance directory is refused; what it points to stays.
-	target := filepath.Join(t.TempDir(), "elsewhere")
+	target := filepath.Join(testutil.TempDir(t), "elsewhere")
 	writeFile(t, filepath.Join(target, "config.ini"), []byte("avd.ini.displayname=far\n"))
 	if err := os.RemoveAll(Dir(r, 1)); err != nil {
 		t.Fatal(err)
