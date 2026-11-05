@@ -183,6 +183,11 @@ func scanQemuOf(roots []*root.Root, indexes []int) (map[int]win.Process, error) 
 		}
 		return found, nil
 	}
+	// Process queries alone do not implement QemuBelongsTo's host ownership
+	// checks. Keep discovery unsupported until that identity chain is available.
+	if err := requireWindows(); err != nil {
+		return nil, err
+	}
 	plans := make([]root.PortPlan, len(roots))
 	for k, r := range roots {
 		plans[k] = r.Ports()
