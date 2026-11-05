@@ -12,8 +12,8 @@ import (
 
 	"modavd/internal/avd"
 	"modavd/internal/errs"
+	"modavd/internal/host"
 	"modavd/internal/root"
-	"modavd/internal/win"
 )
 
 func gateTree(t *testing.T, dir string) []string {
@@ -81,8 +81,8 @@ func TestQemuScanRejectsUnsupportedCommandLine(t *testing.T) {
 	}
 	saved := listQemuProcesses
 	t.Cleanup(func() { listQemuProcesses = saved })
-	listQemuProcesses = func() ([]win.Process, error) {
-		return []win.Process{{PID: 4242, Name: "qemu-system-x86_64"}}, nil
+	listQemuProcesses = func() ([]host.Process, error) {
+		return []host.Process{{PID: 4242, Name: "qemu-system-x86_64"}}, nil
 	}
 	if _, err := scanQemuOf([]*root.Root{r}, []int{1}); errs.CodeOf(err) != errs.Unsupported {
 		t.Fatalf("lost command-line unsupported: %v", err)

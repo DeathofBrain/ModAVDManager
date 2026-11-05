@@ -1,6 +1,6 @@
 //go:build darwin && cgo
 
-package win
+package macos
 
 import (
 	"bufio"
@@ -241,11 +241,12 @@ type darwinSpawnReply struct {
 // returns only after that helper has been reaped and a surviving target has
 // moved to launchd (PID 1), in its own process group. Its eventual exit code is
 // unknown to us: it is not our child and no success status is fabricated.
-func StartOrphan(exe string, args []string, opt StartOptions) (Process, error) {
+// An empty helper falls back to StartDetached.
+func StartOrphan(exe string, args []string, opt StartOptions, helperPath string) (Process, error) {
 	if opt.Output != nil {
 		return Process{}, errs.New(errs.Internal, "StartOrphan 只能用 OutputPath 指定输出文件")
 	}
-	if OrphanHelper == "" {
+	if helperPath == "" {
 		return StartDetached(exe, args, opt)
 	}
 	abs, err := darwinResolveExe(exe)
@@ -272,7 +273,7 @@ func StartOrphan(exe string, args []string, opt StartOptions) (Process, error) {
 		return Process{}, darwinLaunchError(abs, err)
 	}
 	defer reader.Close()
-	cmd := exec.Command(OrphanHelper, SpawnHelperArg, string(encoded))
+	cmd := exec.Command(helperPath, SpawnHelperArg, string(encoded))
 	cmd.Env = darwinChildEnv(opt.Env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout, cmd.Stderr = writer, writer

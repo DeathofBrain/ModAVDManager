@@ -1,13 +1,9 @@
 //go:build !windows
 
-// Package win is the platform boundary used by the rest of ModAVD.  The
-// non-Windows implementation exposes the same API; unimplemented operations
-// return errs.Unsupported. Darwin process support uses libproc through cgo.
-package win
+package host
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 
 	"modavd/internal/errs"
@@ -15,34 +11,15 @@ import (
 
 var errUnsupported = errs.New(errs.Unsupported, "当前平台暂不支持此操作")
 
-// Created is Unix microseconds on Darwin; identities are local to this host.
-type Process struct {
-	PID     uint32
-	PPID    uint32
-	Name    string
-	Created uint64
-}
-
-type Listener struct {
-	Port int
-	PID  uint32
-}
-
-type StartOptions struct {
-	Dir        string
-	Env        []string
-	Output     *os.File
-	OutputPath string
-}
-
-var OrphanHelper string
-
-const SpawnHelperArg = "__spawn"
 const HideConsole = 0
 
-type FileLock struct{ f *os.File }
+// L3Group is the cache topology exposed by the host interface.
+type L3Group struct {
+	Size uint32
+	Mask uint64
+}
 
-// HideConsoleCmd is a no-op because non-Windows has no CREATE_NO_WINDOW flag.
+// HideConsoleCmd is a no-op on hosts without a Windows console.
 func HideConsoleCmd(*exec.Cmd) {}
 
 // SetAboveNormalPriority calls SetPriorityClass with ABOVE_NORMAL_PRIORITY_CLASS.
@@ -53,12 +30,6 @@ func SetAffinity(Process, uint64) error { return errUnsupported }
 
 // GetAffinity calls GetProcessAffinityMask on Windows.
 func GetAffinity(Process) (uint64, error) { return 0, errUnsupported }
-
-// L3Group is one L3 cache: its size in bytes and the logical processors sharing it.
-type L3Group struct {
-	Size uint32
-	Mask uint64
-}
 
 // L3Groups lists the L3 caches of the host.
 func L3Groups() []L3Group { return nil }

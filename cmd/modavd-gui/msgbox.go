@@ -1,5 +1,5 @@
 package main
 
-import "modavd/internal/win"
+import "modavd/internal/host"
 
-func fatal(msg string) { _ = win.MessageBox(msg) }
+func fatal(msg string) { _ = host.MessageBox(msg) }

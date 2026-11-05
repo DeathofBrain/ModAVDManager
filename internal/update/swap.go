@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"modavd/internal/errs"
+	"modavd/internal/host"
 	"modavd/internal/jsonord"
 	"modavd/internal/root"
-	"modavd/internal/win"
 )
 
 // swapBlocked: the swap did not start (or was undone) because something is still running or held; the prepared
@@ -569,7 +569,7 @@ func (u *Updater) processesUsing(programs bool) ([]processUse, error) {
 	for _, rel := range []string{"ModAVD.exe", "tools/modavd.exe"} {
 		progs[strings.ToLower(realOrSame(u.l.at(rel)))] = true
 	}
-	procs, err := win.ListProcesses()
+	procs, err := host.ListProcesses()
 	if err != nil {
 		return nil, err
 	}

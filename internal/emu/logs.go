@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"modavd/internal/avd"
+	"modavd/internal/host"
 	"modavd/internal/logx"
 	"modavd/internal/root"
-	"modavd/internal/win"
 )
 
 // What in the logs dir is ours to prune: the files emulator output mas_<i>-<time>.log and guest logcat
@@ -299,13 +299,13 @@ func logcatCmdlineMatches(cmdline []string, port, serial string) bool {
 
 // findLogcatProcesses are the host's `adb -P <port> -s <serial> logcat` processes, whoever started them: a record of
 // our own would not do, a capture an earlier modavd started keeps running.
-func (m *Manager) findLogcatProcesses(serial string) ([]win.Process, error) {
-	procs, err := win.ListProcesses()
+func (m *Manager) findLogcatProcesses(serial string) ([]host.Process, error) {
+	procs, err := host.ListProcesses()
 	if err != nil {
 		return nil, err
 	}
 	port := strconv.Itoa(m.Root.AdbServerPort())
-	var found []win.Process
+	var found []host.Process
 	for _, p := range procs {
 		if !strings.EqualFold(p.Name, root.CurrentPlatform().ADB) {
 			continue
@@ -362,7 +362,7 @@ func (m *Manager) ensureLogcat(ctx context.Context, i int) string {
 	path := filepath.Join(m.Root.LogsDir(), "logcat-"+root.AvdName(i)+"-"+stamp+".txt")
 	exe := m.Root.AdbExe()
 	// StartOrphan creates the file and its directory
-	if _, err := win.StartOrphan(exe, logcatArgs(m.Root.AdbServerPort(), serial), win.StartOptions{
+	if _, err := host.StartOrphan(exe, logcatArgs(m.Root.AdbServerPort(), serial), host.StartOptions{
 		Dir:        filepath.Dir(exe),
 		Env:        m.ADB.Env(),
 		OutputPath: path,
@@ -424,14 +424,14 @@ func (m *Manager) logcatAfterReregister(serial string) {
 
 // privateServerProcess is the adb server listening on the private port, zero when none, when the listener table or
 // the process cannot be read, or when what listens there is not adb.exe (no server of ours to judge clients by).
-func (m *Manager) privateServerProcess() win.Process {
-	pid, ok, err := win.ListenerPID(m.Root.AdbServerPort())
+func (m *Manager) privateServerProcess() host.Process {
+	pid, ok, err := host.ListenerPID(m.Root.AdbServerPort())
 	if err != nil || !ok {
-		return win.Process{}
+		return host.Process{}
 	}
-	p, ok := win.FindProcess(pid)
+	p, ok := host.FindProcess(pid)
 	if !ok || !strings.EqualFold(p.Name, root.CurrentPlatform().ADB) {
-		return win.Process{}
+		return host.Process{}
 	}
 	return p
 }
@@ -440,7 +440,7 @@ func (m *Manager) privateServerProcess() win.Process {
 // connected to an earlier server that is gone. Except the client that started this server itself (adb's
 // fork-server makes the server its child, created a moment after it). Unknown creation times, or no known server,
 // count as live: never end a capture that may be working.
-func splitLogcatClients(clients []win.Process, server win.Process) (live, stale []win.Process) {
+func splitLogcatClients(clients []host.Process, server host.Process) (live, stale []host.Process) {
 	for _, c := range clients {
 		if server.Created != 0 && c.Created != 0 && c.Created < server.Created && server.PPID != c.PID {
 			stale = append(stale, c)
@@ -452,7 +452,7 @@ func splitLogcatClients(clients []win.Process, server win.Process) (live, stale 
 }
 
 // endProcesses kills procs and waits up to timeout in all for them to be gone.
-func endProcesses(procs []win.Process, timeout time.Duration) {
+func endProcesses(procs []host.Process, timeout time.Duration) {
 	for _, p := range procs {
 		p.Kill()
 	}
@@ -465,7 +465,7 @@ func endProcesses(procs []win.Process, timeout time.Duration) {
 }
 
 // pidList is "12, 34" for the log.
-func pidList(procs []win.Process) string {
+func pidList(procs []host.Process) string {
 	pids := make([]string, len(procs))
 	for k, p := range procs {
 		pids[k] = strconv.FormatUint(uint64(p.PID), 10)

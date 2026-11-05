@@ -1,14 +1,38 @@
 //go:build !windows && (!darwin || !cgo)
 
-package win
+package host
 
 import (
 	"os"
 	"time"
 )
 
-// Darwin process queries require libproc (cgo). Cross builds without cgo keep
-// the unsupported boundary instead of substituting incomplete process identity.
+type Process struct {
+	PID     uint32
+	PPID    uint32
+	Name    string
+	Created uint64
+}
+
+type Listener struct {
+	Port int
+	PID  uint32
+}
+
+type StartOptions struct {
+	Dir        string
+	Env        []string
+	Output     *os.File
+	OutputPath string
+}
+
+// SetOrphanHelper is a no-op while process launching is unsupported.
+func SetOrphanHelper(string) {}
+
+const SpawnHelperArg = "__spawn"
+
+type FileLock struct{}
+
 // ListProcesses uses CreateToolhelp32Snapshot and Process32First/Next on Windows.
 func ListProcesses() ([]Process, error) { return nil, errUnsupported }
 

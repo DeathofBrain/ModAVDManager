@@ -1,6 +1,6 @@
 //go:build darwin && cgo
 
-package win
+package macos
 
 import (
 	"errors"

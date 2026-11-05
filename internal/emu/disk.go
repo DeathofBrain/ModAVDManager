@@ -24,7 +24,7 @@ import (
 
 	"modavd/internal/adb"
 	"modavd/internal/errs"
-	"modavd/internal/win"
+	"modavd/internal/host"
 )
 
 // userdataOverlay / userdataBacking name the data-disk files inside an instance
@@ -229,7 +229,7 @@ func (m *Manager) runQemuImgCheck(ctx context.Context, image string) (out []byte
 	cmd := exec.CommandContext(cctx, exe, "check", "--output=json", image)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	win.HideConsoleCmd(cmd)
+	host.HideConsoleCmd(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
 	if ctx.Err() != nil {
@@ -299,7 +299,7 @@ func (m *Manager) DiskInfo(ctx context.Context, i int) (*DiskInfoResult, error) 
 		return nil, err
 	}
 
-	onDisk, err := win.GetCompressedFileSize(overlay)
+	onDisk, err := host.GetCompressedFileSize(overlay)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func (m *Manager) DiskInfo(ctx context.Context, i int) (*DiskInfoResult, error) 
 	// Not seen running, but a start may be launching qemu right now (it holds the start lock for the whole start,
 	// before qemuOf can see the process). Take that lock so qemu-img does not read the overlay while a launch opens
 	// it; if a start holds it, report the header-only numbers rather than fail or stall a boot (ModAVD/ModAVD#2 P3-8).
-	startLock, ok, err := win.TryLock(m.lockPath(i, "start"))
+	startLock, ok, err := host.TryLock(m.lockPath(i, "start"))
 	if err != nil {
 		return nil, errs.Wrap(errs.Internal, err, "实例锁文件打不开: "+m.lockPath(i, "start"))
 	}
@@ -397,7 +397,7 @@ var compactFileSystems = map[string]bool{"NTFS": true, "REFS": true}
 // mid-rename could leave only the temp file, and the emulator would then build an empty overlay over the backing,
 // so a later run would delete the one good copy (ModAVD/ModAVD#2 P2-1).
 func requireCompactFS(overlay string) error {
-	fs, err := win.VolumeFileSystem(overlay)
+	fs, err := host.VolumeFileSystem(overlay)
 	if err != nil {
 		return err
 	}
@@ -434,7 +434,7 @@ func (m *Manager) lockInstanceForCompact(i int) (func(), error) {
 		{"bridge", "正在装卸执行桥"},
 		{"create", "正在新建"},
 	}
-	var locks []*win.FileLock
+	var locks []*host.FileLock
 	unlock := func() {
 		for k := len(locks) - 1; k >= 0; k-- {
 			locks[k].Unlock()
@@ -442,7 +442,7 @@ func (m *Manager) lockInstanceForCompact(i int) (func(), error) {
 	}
 	for _, kw := range kinds {
 		path := m.lockPath(i, kw.kind)
-		l, ok, err := win.TryLock(path)
+		l, ok, err := host.TryLock(path)
 		if err != nil {
 			unlock()
 			return nil, errs.Wrap(errs.Internal, err, "实例锁文件打不开: "+path)
@@ -470,7 +470,7 @@ func (m *Manager) runQemuImg(ctx context.Context, timeout time.Duration, args ..
 	cmd := exec.CommandContext(cctx, exe, args...)
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
-	win.HideConsoleCmd(cmd)
+	host.HideConsoleCmd(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
@@ -702,7 +702,7 @@ func (m *Manager) DiskCompact(ctx context.Context, i int) (*DiskCompactResult, e
 	}
 	backingName := filepath.Base(info.BackingFilename)
 
-	before, err := win.GetCompressedFileSize(overlay)
+	before, err := host.GetCompressedFileSize(overlay)
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +726,7 @@ func (m *Manager) DiskCompact(ctx context.Context, i int) (*DiskCompactResult, e
 	if err != nil {
 		return nil, err
 	}
-	free, err := win.DiskFree(in.Dir)
+	free, err := host.DiskFree(in.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -762,12 +762,12 @@ func (m *Manager) DiskCompact(ctx context.Context, i int) (*DiskCompactResult, e
 		_ = os.Remove(tmp)
 		return nil, errs.Wrap(errs.Internal, err, "刷新整理后的数据盘失败")
 	}
-	if err := win.MoveFileReplaceThrough(tmp, overlay); err != nil {
+	if err := host.MoveFileReplaceThrough(tmp, overlay); err != nil {
 		_ = os.Remove(tmp)
 		return nil, err
 	}
 
-	after, err := win.GetCompressedFileSize(overlay)
+	after, err := host.GetCompressedFileSize(overlay)
 	if err != nil {
 		return nil, err
 	}
