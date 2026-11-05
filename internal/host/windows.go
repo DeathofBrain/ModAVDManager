@@ -3,6 +3,7 @@
 package host
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"time"
@@ -46,6 +47,11 @@ func TryLock(path string) (*FileLock, bool, error) { return win.TryLock(path) }
 func Lock(path string, timeout time.Duration) (*FileLock, bool, error) {
 	return win.Lock(path, timeout)
 }
+func ExclusiveLockHeld(path string) (bool, error) { return win.ExclusiveLockHeld(path) }
+
+func RunBound(ctx context.Context, exe string, args ...string) ([]byte, []byte, *os.ProcessState, error) {
+	return win.RunBound(ctx, exe, args...)
+}
 
 func Listeners() ([]Listener, error)             { return win.Listeners() }
 func ListenerPID(port int) (uint32, bool, error) { return win.ListenerPID(port) }
@@ -66,7 +72,9 @@ func Unprotect(data, entropy []byte) ([]byte, error)    { return win.Unprotect(d
 func SetEmulatorWindowsVisible(pid uint32, visible bool) (int, error) {
 	return win.SetEmulatorWindowsVisible(pid, visible)
 }
-func GetConsoleWindow() uintptr       { return win.GetConsoleWindow() }
-func MessageBox(message string) error { return win.MessageBox(message) }
+func GetConsoleWindow() uintptr                    { return win.GetConsoleWindow() }
+func MessageBox(message string) error              { return win.MessageBox(message) }
+func OpenStableRead(path string) (*os.File, error) { return win.OpenStableRead(path) }
+func FileChangeStamp(f *os.File) string            { return win.FileChangeStamp(f) }
 
 func TerminateRefused(p Process) bool { return win.TerminateRefused(p) }

@@ -305,10 +305,9 @@ func (m *Manager) lockPath(i int, kind string) string {
 }
 
 func (m *Manager) lock(ctx context.Context, i int, kind string, wait time.Duration, what string) (*host.FileLock, error) {
-	path := m.lockPath(i, kind)
-	l, ok, err := host.TryLock(path)
+	l, ok, err := m.tryOperationLock(i, kind)
 	if err != nil {
-		return nil, errs.Wrap(errs.Internal, err, "实例锁文件打不开: "+path)
+		return nil, err
 	}
 	if ok {
 		return l, nil
@@ -319,9 +318,14 @@ func (m *Manager) lock(ctx context.Context, i int, kind string, wait time.Durati
 		if err := ctx.Err(); err != nil {
 			return nil, errs.Wrap(errs.Canceled, err, "已取消")
 		}
-		l, ok, err = host.Lock(path, 500*time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return nil, errs.Wrap(errs.Canceled, ctx.Err(), "已取消")
+		case <-time.After(100 * time.Millisecond):
+		}
+		l, ok, err = m.tryOperationLock(i, kind)
 		if err != nil {
-			return nil, errs.Wrap(errs.Internal, err, "实例锁文件打不开: "+path)
+			return nil, err
 		}
 		if ok {
 			return l, nil
@@ -366,14 +370,15 @@ func (m *Manager) guestLockPath(i int) string {
 	return filepath.Join(m.Root.AvdHome(), "."+root.AvdName(i)+".guest.lock")
 }
 
-// removeLockFiles deletes the lock files, the setup marker, create's progress file and the boot record of instance i
+// removeLockFiles deletes the lock files, the setup marker, create's progress / cancellation files and the boot record
 // (after Delete); best effort.
 func (m *Manager) removeLockFiles(i int) {
-	for _, kind := range []string{"start", "boot", "stop", "watch", "bridge", "create", "proxy"} {
+	for _, kind := range []string{"start", "boot", "stop", "watch", "bridge", "create", "proxy", "disk"} {
 		os.Remove(m.lockPath(i, kind))
 	}
 	os.Remove(m.setupMarkerPath(i))
 	os.Remove(m.createProgressPath(i))
+	os.Remove(m.createCancelPath(i))
 	os.Remove(m.guestLockPath(i))
 	m.removeBootRecord(i)
 }
