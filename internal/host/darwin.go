@@ -58,3 +58,4 @@ func BusyPorts(ports []int) ([]int, error)       { return macos.BusyPorts(ports)
 func DiskFree(path string) (uint64, error)               { return macos.DiskFree(path) }
 func AvailableMemoryMB() (uint64, error)                 { return macos.AvailableMemoryMB() }
 func MetalDevices(ctx context.Context) ([]string, error) { return macos.MetalDevices(ctx) }
+func RenameNoReplace(src, dst string) error              { return macos.RenameNoReplace(src, dst) }

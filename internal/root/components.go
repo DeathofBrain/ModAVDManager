@@ -44,16 +44,23 @@ type SDKComponent struct {
 	Target      string   // directory under <sdk>
 	StatusFiles []string // Present: AUTO-MAS _KEY_FILES
 
-	// What components fetch needs; URL is "" on hosts that have no catalogue yet (darwin, linux), where Complete means
+	// What components fetch needs; URL is "" on hosts that have no catalogue yet, where Complete means
 	// nothing.
-	URL            string            // relative to a mirror's base URL
-	Size           int64             // of the zip
-	SHA1           string            // of the zip, lower hex
-	ArchiveRoot    string            // the zip's top directory, which becomes Target
-	KeyFiles       []string          // Complete: each must be a non-empty file
-	KeyHashes      map[string]string // Complete: file -> pinned SHA-256 (lower hex)
-	ExtractedBytes int64             // unpacked size, for the free-space check
-	Properties     string            // source.properties written when the zip has none
+	URL                string            // relative to a mirror's base URL
+	Size               int64             // of the zip
+	SHA1               string            // of the zip, lower hex
+	SHA256             string            // optional additional archive pin
+	ArchiveRoot        string            // the zip's top directory, which becomes Target
+	KeyFiles           []string          // Complete: each must be a non-empty file
+	KeyHashes          map[string]string // Complete: file -> pinned SHA-256 (lower hex)
+	ExtractedBytes     int64             // unpacked size, for the free-space check
+	Properties         string            // source.properties written when the zip has none
+	Executables        []string          // Complete: these files must retain an execute bit
+	StrictRevision     bool              // require exactly Version even without per-file pins
+	LicenseID          string            // empty uses the existing Android SDK license
+	LicenseManifest    string            // relative repository XML containing LicenseID
+	LicenseSHA256      string            // normalized license text plus LF
+	RequiredProperties map[string]string // Complete: exact host/guest identity fields
 }
 
 func systemImageFiles() []string {
@@ -90,11 +97,14 @@ func WindowsComponents() []SDKComponent {
 	}
 }
 
-// SDKComponents is this host's table: the Windows one, or on darwin and linux the same two components with the host's
-// adb name and no catalogue.
+// SDKComponents is this host's table: a complete catalogue for Windows and Apple Silicon macOS, or only the
+// component status paths on hosts that do not support downloading yet.
 func SDKComponents() []SDKComponent {
 	if runtime.GOOS == "windows" {
 		return WindowsComponents()
+	}
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		return DarwinComponents()
 	}
 	p := CurrentPlatform()
 	return []SDKComponent{
@@ -102,6 +112,48 @@ func SDKComponents() []SDKComponent {
 			StatusFiles: []string{p.ADB}},
 		{ID: "system-image", Name: p.SystemImageName, FetchName: p.SystemImageName, Target: p.SystemImageDir,
 			StatusFiles: systemImageFiles()},
+	}
+}
+
+// DarwinComponents pins the official stable archives used by the Apple Silicon
+// package. SHA-1 and license identities come from Google's repository XML;
+// SHA-256 pins also match the separately verified macOS maintenance lock file.
+func DarwinComponents() []SDKComponent {
+	p := CurrentPlatform()
+	return []SDKComponent{
+		{
+			ID: "platform-tools", Name: PlatformToolsName, FetchName: PlatformToolsName, Version: "37.0.1",
+			Target: "platform-tools", StatusFiles: []string{p.ADB},
+			URL: "platform-tools_r37.0.1-darwin.zip", Size: 16110554,
+			SHA1:        "6ae73f4de6452dc57e62ec02b68eed92a4c21661",
+			SHA256:      "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+			ArchiveRoot: "platform-tools", KeyFiles: []string{p.ADB, "lib64/libc++.dylib"},
+			KeyHashes: map[string]string{
+				p.ADB:                "1811e253b21b12cbfda7201ebaf86c10e7ddcb5c606a7a81f7c82b4c429c2d3b",
+				"lib64/libc++.dylib": "861dfb2d769b81267c118cb061aab1b2637686363a2ecf162411774fa6a37faf",
+			},
+			Executables: []string{p.ADB}, ExtractedBytes: 60000000, StrictRevision: true,
+			Properties: "Pkg.UserSrc=false\nPkg.Revision=37.0.1\n",
+			LicenseID:  "android-sdk-license", LicenseManifest: "repository2-3.xml",
+			LicenseSHA256: "1f8729233617b193fd619213792ae16a41b95d2bbbf525dfe66998252ba68b16",
+		},
+		{
+			ID: "system-image", Name: p.SystemImageName,
+			FetchName: "系统镜像（Android 14 Google APIs arm64-v8a）", Version: "14",
+			Target: p.SystemImageDir, StatusFiles: systemImageFiles(),
+			URL: "sys-img/google_apis/arm64-v8a-34_r14.zip", Size: 1610393229,
+			SHA1:        "2fe8b46d419a3400e30f31b0152b241b50c8b99f",
+			SHA256:      "bd1c323cbdd3c9dd55dde54588b298d172fd126fe16e127a7bd7aeab6897890a",
+			ArchiveRoot: "arm64-v8a", KeyFiles: systemImageFiles(), ExtractedBytes: 6000000000,
+			StrictRevision:     true,
+			RequiredProperties: map[string]string{"SystemImage.Abi": p.GuestABI, "AndroidVersion.ApiLevel": "34", "SystemImage.TagId": "google_apis"},
+			Properties: "Pkg.Desc=System Image arm64-v8a with Google APIs.\nPkg.Revision=14\nPkg.Dependencies=emulator#34.2.16\n" +
+				"AndroidVersion.ApiLevel=34\nAndroidVersion.ExtensionLevel=7\nAndroidVersion.IsBaseSdk=true\n" +
+				"SystemImage.Abi=arm64-v8a\nSystemImage.TagId=google_apis\nSystemImage.TagDisplay=Google APIs\n" +
+				"SystemImage.GpuSupport=true\nAddon.VendorId=google\nAddon.VendorDisplay=Google Inc.\n",
+			LicenseID: "android-sdk-arm-dbt-license", LicenseManifest: "sys-img/google_apis/sys-img2-3.xml",
+			LicenseSHA256: "0682da42e0ca119ce29503c265587f8ae17277094f9262b54c1d2bb99557c6f5",
+		},
 	}
 }
 
@@ -121,7 +173,13 @@ func (c SDKComponent) Complete(dir string) bool {
 			return false
 		}
 	}
-	if len(c.KeyHashes) == 0 {
+	for _, name := range c.Executables {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			return false
+		}
+	}
+	if len(c.KeyHashes) == 0 && !c.StrictRevision && len(c.RequiredProperties) == 0 {
 		return true
 	}
 	for name, want := range c.KeyHashes {
@@ -133,6 +191,12 @@ func (c SDKComponent) Complete(dir string) bool {
 	data, err := ReadFileShared(filepath.Join(dir, "source.properties"))
 	if err != nil {
 		return false
+	}
+	for key, want := range c.RequiredProperties {
+		values := propertyValues(data, key)
+		if len(values) != 1 || values[0] != want {
+			return false
+		}
 	}
 	revisions := revisionValues(data)
 	// PowerShell's -ne compares strings case-insensitively.
@@ -157,9 +221,12 @@ func Revision(dir string) string {
 // revisionValues is the trimmed value of every line that matches the script's '^\s*Pkg\.Revision\s*=' (PowerShell's
 // -match ignores case), lines split like .NET ReadAllLines (CRLF, LF or CR; a UTF-8 BOM dropped).
 func revisionValues(data []byte) []string {
+	return propertyValues(data, "Pkg.Revision")
+}
+
+func propertyValues(data []byte, key string) []string {
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	text := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n")
-	const key = "Pkg.Revision"
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
 		s := strings.TrimLeftFunc(line, unicode.IsSpace)

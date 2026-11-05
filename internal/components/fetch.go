@@ -7,8 +7,8 @@
 // never deleted.
 //
 // It writes only downloads\, logs\fetch-components.log (and its .lock), the two component directories under sdk\ and
-// sdk\.staging\: no adb server, no registry, no administrator rights. Only Windows has a catalogue; darwin and linux
-// get errs.Unsupported before anything is read or written.
+// sdk\.staging\: no adb server, no registry, no administrator rights. Windows and native Apple Silicon macOS have
+// catalogues; other hosts return errs.Unsupported before anything is read or written.
 package components
 
 import (
@@ -116,8 +116,9 @@ type fetcher struct {
 	mirrors []Mirror
 	client  *http.Client
 	logFile *os.File
-	asides  []string // old directories moved during this run, also included in errors
-	where   string   // what the run was doing, for the log when it fails (the script's $Where)
+	where   string        // what the run was doing, for the log when it fails (the script's $Where)
+	input   *bufio.Reader // shared by the separate component-license questions
+	asides  []string      // old directories moved during this run, also included in errors
 }
 
 // CheckTimeouts fills in the defaults and checks the script's ranges (1-600 s, 1-600 s, 1-1800 s).
@@ -185,6 +186,10 @@ func ChooseMirrors(mirror string, urls []string) ([]Mirror, error) {
 // JSONNeedsLicense is the errs.Usage error of a fetch with JSON but without AcceptLicense: nobody can answer the
 // license question then. The CLI gives it before looking for the root; Fetch gives it again before going online.
 func JSONNeedsLicense() *errs.Error {
+	if fetchGOOS == "darwin" && nativeDarwinComponents {
+		return errs.New(errs.Usage, "--json 模式必须同时给 --accept-license，不能进入交互").
+			WithAdvice("先让用户看过并同意所选组件的全部 Google 许可协议，再带 --accept-license 运行")
+	}
 	return errs.New(errs.Usage, "--json 模式必须同时给 --accept-license，不能进入交互").
 		WithAdvice("先让用户看过并同意《Android 软件开发套件许可协议》，再带 --accept-license 运行")
 }
@@ -194,8 +199,8 @@ func JSONNeedsLicense() *errs.Error {
 // space), NotReady (not a ModAVD root, or sdkRoot set), Busy (another fetch runs), Usage (JSON without
 // AcceptLicense), LicenseDeclined, ComponentsUnavailable / ComponentsRejected (see errs), Canceled, Internal.
 func Fetch(ctx context.Context, r *root.Root, o Options) (*Result, error) {
-	if fetchGOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前只有 Windows 能补全组件")
+	if fetchGOOS != "windows" && !(fetchGOOS == "darwin" && nativeDarwinComponents) {
+		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前支持 Windows 和 Apple Silicon macOS")
 	}
 	if r == nil {
 		return nil, errs.New(errs.NotFound, "找不到魔改 AVD 根目录")
@@ -216,8 +221,13 @@ func Fetch(ctx context.Context, r *root.Root, o Options) (*Result, error) {
 
 func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 	r := f.r
-	_, statErr := os.Stat(filepath.Join(f.sdk, "emulator", "emulator.exe"))
+	_, statErr := os.Stat(filepath.Join(f.sdk, "emulator", root.CurrentPlatform().Emulator))
 	isRoot := statErr == nil
+	if isRoot && f.darwin() && r.LocalSDKRoot() == "" {
+		if err := f.platformPaths(); err != nil {
+			return nil, err
+		}
+	}
 	if isRoot {
 		// Only in a ModAVD root: a refused run elsewhere leaves no logs\ behind.
 		f.openLog()
@@ -252,12 +262,20 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		seconds(f.o.ManifestTimeout), free))
 
 	if !isASCII(r.Dir) {
+		advice := `请把整个文件夹挪到只含英文、数字的路径下（例如 D:\ModAVD），再重新运行`
+		if f.darwin() {
+			advice = "请把整个文件夹挪到只含英文、数字的路径下（例如 /Users/you/ModAVD），再重新运行"
+		}
 		return nil, errs.New(errs.PrecheckFailed, "这个文件夹的路径里有中文或其他非英文字符，模拟器在这种路径下起不来").
-			WithAdvice(`请把整个文件夹挪到只含英文、数字的路径下（例如 D:\ModAVD），再重新运行`)
+			WithAdvice(advice)
 	}
 	if !isRoot {
-		return nil, errs.Newf(errs.NotReady, `这里没有 sdk\emulator\emulator.exe，不像是魔改 AVD 的文件夹：%s`, r.Dir).
-			WithAdvice("请把 Release 压缩包完整解压后，在解压出来的文件夹里双击「补全组件.bat」")
+		advice := "请把 Release 压缩包完整解压后，在解压出来的文件夹里双击「补全组件.bat」"
+		if f.darwin() {
+			advice = "请完整解压 Apple Silicon 发行包，再在包根目录运行 modavd components fetch"
+		}
+		return nil, errs.Newf(errs.NotReady, "这里没有 %s，不像是魔改 AVD 的文件夹：%s", filepath.Join("sdk", "emulator", root.CurrentPlatform().Emulator), r.Dir).
+			WithAdvice(advice)
 	}
 	if r.LocalSDKRoot() != "" {
 		// check and components status look at that SDK; fetch only ever writes this root's sdk\.
@@ -266,6 +284,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 	}
 	if lock, err = f.lock(); err != nil {
 		return nil, err
+	}
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return nil, err
+		}
 	}
 	f.clearStaging()
 
@@ -291,24 +314,25 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		res.Components = append(res.Components, cr)
 	}
 	if len(todo) == 0 {
-		f.say("组件都已齐全，不需要下载。完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+		if f.darwin() {
+			f.say("组件都已齐全，不需要下载。可以打开管理器创建或启动实例了。")
+		} else {
+			f.say("组件都已齐全，不需要下载。完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+		}
 		return res, nil
 	}
 	if f.o.JSON && !f.o.AcceptLicense {
 		// the CLI refuses this before it even looks for the root (JSONNeedsLicense); this is the second line
 		return nil, JSONNeedsLicense()
 	}
+	if err := f.platformIdle(); err != nil {
+		return nil, err
+	}
 	if err := f.checkSpace(todo); err != nil {
 		return nil, err
 	}
 
-	f.where = "获取许可协议"
-	text, from, err := f.license(ctx)
-	if err != nil {
-		return nil, err
-	}
-	res.License, res.LicenseSource = text, from
-	if err := f.consent(text, from, todo); err != nil {
+	if err := f.acceptLicenses(ctx, todo, res); err != nil {
 		return nil, err
 	}
 
@@ -321,6 +345,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		if err != nil {
 			return nil, err
 		}
+		if f.darwin() {
+			if err := f.checkSpace([]root.SDKComponent{c}); err != nil {
+				return nil, err
+			}
+		}
 		f.say("  解压安装…")
 		aside, err := f.install(ctx, c, zipFile)
 		if aside != "" {
@@ -329,7 +358,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		if err != nil {
 			return nil, err
 		}
-		f.say(`  已装好：sdk\` + c.Target)
+		if f.darwin() {
+			f.say("  已装好：" + filepath.Join(root.SDKDir, c.Target))
+		} else {
+			f.say(`  已装好：sdk\` + c.Target)
+		}
 		if f.o.KeepDownloads {
 			res.Downloads = append(res.Downloads, filepath.Base(zipFile))
 		} else if err := os.Remove(zipFile); err == nil {
@@ -351,7 +384,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 			return nil, rejected("检查发现 %s 仍不完整", c.FetchName)
 		}
 	}
-	f.say("完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+	if f.darwin() {
+		f.say("完成，可以打开管理器创建或启动实例了。")
+	} else {
+		f.say("完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+	}
 	return res, nil
 }
 
@@ -372,7 +409,7 @@ func onlyLicenseLeft(dir string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if e.Name() != licenseFile {
+		if e.Name() != licenseFile && e.Name() != "android-sdk-arm-dbt-license.txt" {
 			return false
 		}
 	}
@@ -406,6 +443,9 @@ func (f *fetcher) lock() (*host.FileLock, error) {
 // checkSpace: the downloads still to come (less what downloads\ holds) plus the unpacked sizes plus 500 MB must fit
 // on the root's drive. A free space that cannot be read stops the run, as in the script.
 func (f *fetcher) checkSpace(todo []root.SDKComponent) error {
+	if f.darwin() {
+		return f.platformSpace(todo)
+	}
 	need := int64(500 << 20)
 	for _, c := range todo {
 		zipFile := f.zipPath(c)
@@ -440,13 +480,21 @@ const licenseFile = "android-sdk-license.txt"
 // consent shows the license and its source and asks for y (yes) unless AcceptLicense. Only after that is the copy in
 // downloads\ written: a refusal leaves no file there.
 func (f *fetcher) consent(text, from string, todo []root.SDKComponent) error {
-	f.notice("\n================ Android Software Development Kit License Agreement ================\n" + text +
+	return f.consentLicense(text, from, todo, licenseID)
+}
+
+func (f *fetcher) consentLicense(text, from string, todo []root.SDKComponent, id string) error {
+	title, label := "Android Software Development Kit License Agreement", "Android 软件开发套件许可协议"
+	if id == "android-sdk-arm-dbt-license" {
+		title, label = "Android SDK ARM System Image License Agreement", "Android SDK ARM 系统镜像许可协议"
+	}
+	f.notice("\n================ " + title + " ================\n" + text +
 		"\n=====================================================================================\n\n")
 	names := make([]string, len(todo))
 	for k, c := range todo {
 		names[k] = c.FetchName
 	}
-	shown := fmt.Sprintf("以上是 Google《Android 软件开发套件许可协议》全文（取自 %s）。", from)
+	shown := fmt.Sprintf("以上是 Google《%s》全文（取自 %s）。", label, from)
 	terms := fmt.Sprintf("接下来要下载的 %s 由 Google 提供、受这份协议约束，本项目不分发它们。", strings.Join(names, "、"))
 	f.notice(shown + "\n" + terms + "\n")
 	f.note(shown)
@@ -459,7 +507,10 @@ func (f *fetcher) consent(text, from string, todo []root.SDKComponent) error {
 		if in == nil {
 			in = os.Stdin
 		}
-		line, _ := bufio.NewReader(in).ReadString('\n')
+		if f.input == nil {
+			f.input = bufio.NewReader(in)
+		}
+		line, _ := f.input.ReadString('\n')
 		answer := strings.TrimRight(line, "\r\n")
 		f.note("用户输入：" + answer)
 		if a := strings.TrimSpace(answer); !strings.EqualFold(a, "y") && !strings.EqualFold(a, "yes") {
@@ -468,11 +519,16 @@ func (f *fetcher) consent(text, from string, todo []root.SDKComponent) error {
 		}
 		f.say("已同意许可协议。")
 	}
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return err
+		}
+	}
 	dir := filepath.Join(f.r.Dir, "downloads")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return errs.Wrap(errs.Internal, err, "建不了 downloads 目录："+err.Error())
 	}
-	p := filepath.Join(dir, licenseFile)
+	p := filepath.Join(dir, id+".txt")
 	copyText := strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n") + "\r\n"
 	if err := os.WriteFile(p, append([]byte("\xef\xbb\xbf"), copyText...), 0o644); err != nil {
 		return errs.Wrap(errs.Internal, err, "保存许可协议失败："+err.Error())
@@ -481,9 +537,64 @@ func (f *fetcher) consent(text, from string, todo []root.SDKComponent) error {
 	return nil
 }
 
+func (f *fetcher) darwin() bool { return fetchGOOS == "darwin" && nativeDarwinComponents }
+
+// Retrieve all required texts before asking questions or downloading archives.
+// The explicit --accept-license flag applies to every displayed component term.
+func (f *fetcher) acceptLicenses(ctx context.Context, todo []root.SDKComponent, res *Result) error {
+	f.where = "获取许可协议"
+	if !f.darwin() {
+		text, from, err := f.license(ctx)
+		if err != nil {
+			return err
+		}
+		res.License, res.LicenseSource = text, from
+		return f.consent(text, from, todo)
+	}
+	type terms struct {
+		id, text, from string
+		components     []root.SDKComponent
+	}
+	var licenses []terms
+	for _, c := range todo {
+		if c.LicenseID != licenseID && c.LicenseID != "android-sdk-arm-dbt-license" {
+			return rejected("组件 %s 没有受支持的许可标识", c.ID)
+		}
+		found := false
+		for k := range licenses {
+			if licenses[k].id == c.LicenseID {
+				licenses[k].components = append(licenses[k].components, c)
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		text, from, err := f.licenseFor(ctx, c.LicenseManifest, c.LicenseID, c.LicenseSHA256)
+		if err != nil {
+			return err
+		}
+		licenses = append(licenses, terms{c.LicenseID, text, from, []root.SDKComponent{c}})
+	}
+	var texts, sources []string
+	for _, l := range licenses {
+		texts = append(texts, l.id+"\n"+l.text)
+		sources = append(sources, l.id+": "+l.from)
+		if err := f.consentLicense(l.text, l.from, l.components, l.id); err != nil {
+			return err
+		}
+	}
+	res.License, res.LicenseSource = strings.Join(texts, "\n\n"), strings.Join(sources, "; ")
+	return nil
+}
+
 // ---- messages and the log file -----------------------------------------------------------------------------------
 
 func (f *fetcher) openLog() {
+	if f.darwin() && f.platformPaths() != nil {
+		return
+	}
 	dir := f.r.LogsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return

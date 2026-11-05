@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -48,6 +50,10 @@ func within(path, dir string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
+	if runtime.GOOS != "windows" {
+		rel, err := filepath.Rel(d, p)
+		return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
 	d = strings.TrimRight(d, `\/`) + string(filepath.Separator)
 	return len(p) > len(d) && strings.EqualFold(p[:len(d)], d)
 }
@@ -60,6 +66,11 @@ func rejected(format string, args ...any) error {
 // An existing target directory (incomplete, or install would not run) is renamed to <target>.incomplete-<time> and
 // kept for the user, never deleted; it is moved back when the new one cannot be moved in. Returns where it went.
 func (f *fetcher) install(ctx context.Context, c root.SDKComponent, zipPath string) (setAside string, err error) {
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", err
+		}
+	}
 	staging := filepath.Join(f.stagingRoot(), c.ID)
 	f.where = "解压 " + filepath.Base(zipPath) + " 到 " + staging
 	f.removeStaging(staging)
@@ -74,6 +85,17 @@ func (f *fetcher) install(ctx context.Context, c root.SDKComponent, zipPath stri
 		return "", err
 	}
 	extracted := filepath.Join(staging, filepath.FromSlash(c.ArchiveRoot))
+	if ctx.Err() != nil {
+		return "", canceled(ctx)
+	}
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", err
+		}
+		if err := f.platformIdle(); err != nil {
+			return "", err
+		}
+	}
 
 	f.where = `把解压好的 ` + c.FetchName + ` 挪到 sdk\` + c.Target
 	target := c.Dir(f.sdk)
@@ -82,17 +104,17 @@ func (f *fetcher) install(ctx context.Context, c root.SDKComponent, zipPath stri
 		if err != nil {
 			return "", errs.Wrap(errs.Internal, err, "选不了旧目录迁移位置："+err.Error())
 		}
-		if err := os.Rename(target, setAside); err != nil {
+		if err := moveComponent(target, setAside); err != nil {
 			return "", errs.Wrap(errs.Internal, err, `挪不开原有的 sdk\`+c.Target+"："+err.Error())
 		}
 		f.warn(fmt.Sprintf(`  原有的 sdk\%s 不完整，已改名为 %s，确认没用后可以自己删掉`, c.Target, filepath.Base(setAside)))
 	}
 	moveErr := os.MkdirAll(filepath.Dir(target), 0o755)
 	if moveErr == nil {
-		moveErr = os.Rename(extracted, target)
+		moveErr = moveComponent(extracted, target)
 	}
 	if moveErr != nil {
-		if setAside != "" && os.Rename(setAside, target) == nil {
+		if setAside != "" && moveComponent(setAside, target) == nil {
 			f.warn(fmt.Sprintf(`  新的挪不进去，已把 %s 改回 sdk\%s`, filepath.Base(setAside), c.Target))
 			setAside = ""
 		}
@@ -161,7 +183,38 @@ func (f *fetcher) extract(ctx context.Context, c root.SDKComponent, zipPath, sta
 	defer zr.Close()
 	prefix := strings.TrimRight(c.ArchiveRoot, "/") + "/"
 	total := int64(0)
+	if f.darwin() && len(zr.File) > 20000 {
+		return rejected("压缩包条目过多")
+	}
+	seen := map[string]bool{}
+	spellings := map[string]string{}
 	for _, e := range zr.File {
+		if f.darwin() {
+			name := strings.TrimSuffix(e.Name, "/")
+			mode := e.Mode()
+			if name == "" || strings.Contains(e.Name, `\`) || path.Clean(name) != name ||
+				strings.HasPrefix(name, "/") || strings.Contains(name, "\x00") ||
+				(mode.Type() != 0 && !mode.IsDir()) || mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+				return rejected("压缩包里有非法路径或文件类型：%s", e.Name)
+			}
+			key := strings.ToLower(name)
+			if seen[key] {
+				return rejected("压缩包里有重复或大小写冲突的路径：%s", e.Name)
+			}
+			seen[key] = true
+			parts := strings.Split(name, "/")
+			for n := range parts {
+				prefix := strings.Join(parts[:n+1], "/")
+				folded := strings.ToLower(prefix)
+				if previous, ok := spellings[folded]; ok && previous != prefix {
+					return rejected("压缩包目录有大小写冲突：%s", e.Name)
+				}
+				spellings[folded] = prefix
+			}
+			if e.UncompressedSize64 > uint64(c.ExtractedBytes) || total > c.ExtractedBytes-int64(e.UncompressedSize64) {
+				return rejected("压缩包展开后超过组件大小预算")
+			}
+		}
 		total += int64(e.UncompressedSize64)
 	}
 	if total <= 0 {
@@ -236,6 +289,10 @@ func (f *fetcher) extractFile(ctx context.Context, e *zip.File, dest string, buf
 		}
 		n, rerr := in.Read(buf)
 		if n > 0 {
+			if f.darwin() && written+int64(n) > int64(e.UncompressedSize64) {
+				out.Close()
+				return written, rejected("解压出的 %s 超过声明大小", e.Name)
+			}
 			if _, err := out.Write(buf[:n]); err != nil {
 				out.Close()
 				return written, errs.Wrap(errs.Internal, err, "写不了 "+dest+"："+err.Error())
@@ -253,6 +310,15 @@ func (f *fetcher) extractFile(ctx context.Context, e *zip.File, dest string, buf
 	}
 	if err := out.Close(); err != nil {
 		return written, errs.Wrap(errs.Internal, err, "写不了 "+dest+"："+err.Error())
+	}
+	if f.darwin() {
+		mode := os.FileMode(0o644)
+		if e.Mode().Perm()&0o111 != 0 {
+			mode = 0o755
+		}
+		if err := os.Chmod(dest, mode); err != nil {
+			return written, errs.Wrap(errs.Internal, err, "恢复文件权限失败："+dest)
+		}
 	}
 	return written, nil
 }
