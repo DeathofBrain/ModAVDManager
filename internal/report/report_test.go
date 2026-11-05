@@ -12,6 +12,7 @@ import (
 
 	"modavd/internal/jsonord"
 	"modavd/internal/root"
+	"modavd/internal/testutil"
 )
 
 func TestFormatN(t *testing.T) {
@@ -133,7 +134,7 @@ func TestForbiddenEntry(t *testing.T) {
 }
 
 func TestZipStageOrderAndFilter(t *testing.T) {
-	stage := t.TempDir()
+	stage := testutil.TempDir(t)
 	for _, name := range []string{"mas-avd.json", "mas/app.log", "logs/a.log", "avd/mas_1.ini", "summary.txt",
 		"avd/mas_1.avd/config.ini", "avd/mas_1.avd/userdata-qemu.img", "mas/config/account", "mas/data/account"} {
 		p := filepath.Join(stage, filepath.FromSlash(name))
@@ -144,8 +145,8 @@ func TestZipStageOrderAndFilter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dst := filepath.Join(t.TempDir(), "x.zip")
-	entries, err := zipStage(dst, stage)
+	dst := filepath.Join(testutil.TempDir(t), "x.zip")
+	entries, err := zipStage(context.Background(), dst, stage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +218,7 @@ func TestAdbLiveCommands(t *testing.T) {
 	adb := startFakeAdb(t, scenarioAdb{Serials: map[string]scenarioSerial{
 		"emulator-20010": {Features: "cmd,shell_v2", Shell: map[string]scenarioShell{
 			"getprop": {Out: "a\n", Err: "b\n", Exit: &exit3},
-			`export ANDROID_LOG_TAGS="''"; exec logcat '-d' '-b' 'crash'`: {Out: "crash\n"},
+			`export ANDROID_LOG_TAGS=''; exec logcat '-d' '-b' 'crash'`: {Out: "crash\n"},
 		}, Exec: map[string]struct{ B64 string }{"screencap -p": {B64: "iVBORw=="}}},
 		"emulator-20030": {Features: "cmd", Shell: map[string]scenarioShell{"getprop": {Out: "a\n", Err: "b\n", Exit: &exit3}}},
 	}})

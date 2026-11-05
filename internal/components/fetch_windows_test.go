@@ -27,9 +27,11 @@ import (
 	"testing"
 	"time"
 
+	"modavd/internal/buildinfo"
 	"modavd/internal/errs"
 	"modavd/internal/logx"
 	"modavd/internal/root"
+	"modavd/internal/testutil"
 	"modavd/internal/win"
 )
 
@@ -124,22 +126,19 @@ func setup(t *testing.T, specs ...root.SDKComponent) {
 	diskFree = func(string) (uint64, error) { return 1 << 40, nil }
 }
 
-// tempRoot is a ModAVD root (sdk\emulator\emulator.exe) under $MODAVD_TEST_TMP\components when set, else t.TempDir();
+// tempRoot is a ModAVD root (sdk\emulator\emulator.exe) under $MODAVD_TEST_TMP\components when set, else the OS temp directory;
 // sub adds directories under it. Skipped when the base path is not ASCII: fetch refuses such a root.
 func tempRoot(t *testing.T, sub ...string) *root.Root {
 	t.Helper()
-	base := t.TempDir()
+	var base string
 	if env := os.Getenv("MODAVD_TEST_TMP"); env != "" {
 		d := filepath.Join(env, "components")
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		dir, err := os.MkdirTemp(d, "t-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { os.RemoveAll(dir) })
-		base = dir
+		base = testutil.MkdirTemp(t, d, "t-")
+	} else {
+		base = testutil.TempDir(t)
 	}
 	if !isASCII(base) {
 		t.Skip("临时目录的路径里有非 ASCII 字符，补全组件会拒绝；把 MODAVD_TEST_TMP 设成只含英文的目录再测")
@@ -416,7 +415,7 @@ func TestFetchInstallsThenSkips(t *testing.T) {
 		t.Fatalf("requests %+v", reqs)
 	}
 	for _, q := range reqs {
-		if q.encoding != "identity" || q.agent != "ModAVD-fetch-components/1.0" || q.rng != "" {
+		if q.encoding != "identity" || q.agent != "ModAVDManager/"+buildinfo.Version || q.rng != "" {
 			t.Errorf("request %+v", q)
 		}
 	}
@@ -532,7 +531,7 @@ func TestFetchResumesPart(t *testing.T) {
 }
 
 // TestFetchCompletePart: a .part that already has every byte (the run was killed during the SHA-1 or before the
-// rename) needs no request; a complete one with the wrong SHA-1 is dropped and the next mirror starts over.
+// rename) needs no request; a complete one with the wrong SHA-1 is dropped before trying the first mirror.
 func TestFetchCompletePart(t *testing.T) {
 	pt := ptZip(t, adbBody)
 	setup(t, ptSpec(pt))
@@ -555,7 +554,7 @@ func TestFetchCompletePart(t *testing.T) {
 	if out.err != nil {
 		t.Fatal(out.err)
 	}
-	if z := b.zipReqs(); len(a.zipReqs()) != 0 || len(z) != 1 || z[0].rng != "" || !out.warned("SHA-1 不对") {
+	if z := a.zipReqs(); len(b.zipReqs()) != 0 || len(z) != 1 || z[0].rng != "" || !out.warned("SHA-1 不对") {
 		t.Fatalf("requests %+v %+v", a.zipReqs(), z)
 	}
 }
