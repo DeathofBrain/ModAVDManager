@@ -211,7 +211,7 @@ func TestComponentsUseTable(t *testing.T) {
 		}
 	}
 	comps := r.Components()
-	if !comps[0].Installed || !comps[2].Installed || comps[0].Name != PlatformToolsName || comps[2].Name != SDKComponents()[1].Name {
+	if !comps[0].Installed || !comps[2].Installed || comps[0].Name != PlatformToolsName || comps[2].Name != SystemImageName {
 		t.Fatalf("%+v", comps)
 	}
 	os.Remove(filepath.Join(SDKComponents()[1].Dir(r.SDK()), SDKComponents()[1].StatusFiles[0]))
