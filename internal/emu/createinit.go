@@ -428,7 +428,10 @@ func (m *Manager) checkCreated(ctx context.Context, i int, bridge bool, sr *Star
 		missing = append(missing, "首次初始化")
 	}
 	if !sr.HostIME {
-		missing = append(missing, "宿主输入法")
+		channel, _ := m.hostImeChannel(true, sr.LogFile)
+		if root.CurrentPlatform().Windows() || channel {
+			missing = append(missing, "宿主输入法")
+		}
 	}
 	if bridge && m.guestBridgeWithin(ctx, i, statusAdbTimeout) != bridgeProp {
 		missing = append(missing, fmt.Sprintf("arm64 执行桥（日志见 logs 里的 modavd-bridge-%d-*.log）", i))

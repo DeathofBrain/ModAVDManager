@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"modavd/internal/adb"
+	"modavd/internal/avd"
 	"modavd/internal/guest"
 	"modavd/internal/host"
 	"modavd/internal/root"
@@ -22,13 +23,28 @@ const (
 	frameworkBackTimeout   = 120 * time.Second
 )
 
+// guestVulkanProfile uses the instance's configured ABI, never the host OS.
+// Do not guess when a config is unreadable or belongs to an unsupported guest.
+func (m *Manager) guestVulkanProfile(i int) (vkfix.Profile, error) {
+	cfg, err := avd.ReadIni(avd.ConfigPath(m.Root, i))
+	if err != nil {
+		return vkfix.Profile{}, fmt.Errorf("读取实例客体架构: %w", err)
+	}
+	abi := cfg.Value("abi.type")
+	profile, supported := vkfix.ForABI(abi)
+	if !supported {
+		return vkfix.Profile{}, fmt.Errorf("客体架构 %q 没有适用的 Vulkan 补丁", abi)
+	}
+	return profile, nil
+}
+
 // ensureVulkanFix bind-mounts the patched guest Vulkan encoder made on this host over /vendor/lib64/libvulkan_enc.so
 // and restarts zygote (AUTO-MAS _ensure_vulkan_fix; launcher -VulkanFix), on every instance for every game (user
 // 10-16). The patch (internal/vkfix) fixes Star Rail's descriptor templates (khrfix) and Endfield's unlocked
 // vkBindImageMemory lookups (bindlock); games that use neither path are unaffected.
 //
 //   - vulkanfix.sh first checks whether this boot already has it mounted (nothing to do then), then the image
-//     library's hash (anything but 898c0bbc... is left alone); the patched copy is cached in the guest's
+//     library's hash against the configured guest ABI's profile; the patched copy is cached in the guest's
 //     /data/local/tmp, so the next boot mounts it without an upload.
 //   - Without a guest cache the host copy in <root>\guest-patches is pushed; without that, the guest's own library
 //     is pulled and patched here (patchedVulkanLibrary). The patched file is never shipped.
@@ -44,9 +60,14 @@ const (
 //
 // Failures are only logged. Returns whether zygote was restarted, and whether the fix is still owed.
 func (m *Manager) ensureVulkanFix(ctx context.Context, i int, mode bootSetup, until time.Time) (restarted, pending bool) {
+	profile, err := m.guestVulkanProfile(i)
+	if err != nil {
+		m.Log.Warnf("实例 %d 客体 Vulkan 驱动补丁未执行: %v", i, err)
+		return false, false
+	}
 	if mode == setupAdopted {
 		res := m.shell(ctx, i, vulkanFixCheckScript, 0)
-		if warn, msg := vulkanFixCheckReport(i, res.Out); warn {
+		if warn, msg := vulkanFixCheckReport(i, res.Out, profile); warn {
 			m.Log.Warnf("%s", msg)
 		} else {
 			m.Log.Infof("%s", msg)
@@ -62,11 +83,11 @@ func (m *Manager) ensureVulkanFix(ctx context.Context, i int, mode bootSetup, un
 	return m.mountVulkanFix(ctx, i, vulkanFixIO{
 		guestIO: g,
 		remote:  remote,
-		library: func() string { return m.patchedVulkanLibrary(ctx, i) },
+		library: func() string { return m.patchedVulkanLibrary(ctx, i, profile) },
 		waitBack: func(uiBefore string) bool {
 			return m.waitFrameworkBack(ctx, g, uiBefore, frameworkBackTimeout)
 		},
-	}, mode == setupOwed, until)
+	}, profile, mode == setupOwed, until)
 }
 
 // vulkanFixIO is what mountVulkanFix works through: the instance's adb in Manager, a fake guest in tests.
@@ -132,10 +153,14 @@ func (m *Manager) owedMountGate(i int, g guestIO) (release func(), b mountBlocke
 // mountVulkanFix is the mounting part of ensureVulkanFix (a launched boot, or an owed one, owed=true: every run that
 // may mount passes owedMountGate first; until is the marker's deadline for the messages). Returns whether zygote was
 // restarted and whether an owed fix is still owed (deferred while the guest is in use).
-func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, owed bool, until time.Time) (restarted,
+func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, profile vkfix.Profile, owed bool, until time.Time) (restarted,
 	pending bool) {
 	runFix := func() string {
-		res := fx.shell("su 0 sh "+fx.remote+" "+vkfix.OrigSHA256+" "+vkfix.FixSHA256, vulkanFixScriptTimeout)
+		args := profile.OrigSHA256 + " " + profile.FixSHA256
+		if profile.CacheName != vkfix.CacheName {
+			args += " " + profile.CacheName
+		}
+		res := fx.shell("su 0 sh "+fx.remote+" "+args, vulkanFixScriptTimeout)
 		return lastNonEmptyLine(res.Out)
 	}
 	// gatedFix is one vulkanfix.sh run, for an owed fix only once owedMountGate allows it, with the guest lock held
@@ -167,7 +192,7 @@ func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, owe
 			return "", false, true
 		}
 		res := fx.shell(vulkanFixCheckScript, 0)
-		pending, msg := vulkanFixDeferredReport(i, res.Out, b, until, time.Now())
+		pending, msg := vulkanFixDeferredReport(i, res.Out, b, until, time.Now(), profile)
 		if pending {
 			m.Log.Warnf("%s", msg)
 		} else {
@@ -192,7 +217,7 @@ func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, owe
 			m.Log.Warnf("实例 %d 客体 Vulkan 驱动补丁没挂: 推送补丁库失败: %s", i, tail(res.Out, 200))
 			return false, false
 		}
-		m.Log.Infof("实例 %d 客体 Vulkan 驱动补丁 第 2 步: 已推送 %s（sha256 %s）到 %s", i, library, vkfix.FixSHA256,
+		m.Log.Infof("实例 %d 客体 Vulkan 驱动补丁 第 2 步: 已推送 %s（sha256 %s）到 %s", i, library, profile.FixSHA256,
 			vkfix.UploadPath)
 		if status, ok, pending = gatedFix(false); !ok {
 			return false, pending
@@ -203,7 +228,7 @@ func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, owe
 	kind, sha := vulkanFixStatus(status)
 	switch kind {
 	case "ALREADY":
-		if sha == vkfix.FixSHA256 {
+		if sha == profile.FixSHA256 {
 			m.Log.Infof("实例 %d 客体 Vulkan 驱动补丁本次开机已挂上（sha256 %s）", i, sha)
 		} else {
 			m.Log.Warnf("实例 %d 客体驱动库上已经挂着别的文件（sha256 %s），不是这次的补丁，没有动它", i, sha)
@@ -243,14 +268,14 @@ const vulkanFixCheckScript = `if grep -q ' ` + vkfix.GuestPath + ` ' /proc/self/
 // missing: the instance runs a whole boot without it then (Star Rail's descriptor templates, Endfield's
 // vkBindImageMemory), and the warning says how to get it. Otherwise this boot's state is only logged: an image whose
 // library already is the patched one, or an unexpected image (the start that booted it reported that already).
-func vulkanFixCheckReport(i int, out string) (warn bool, msg string) {
+func vulkanFixCheckReport(i int, out string, profile vkfix.Profile) (warn bool, msg string) {
 	line := lastNonEmptyLine(out)
 	switch sha, isImage := strings.CutPrefix(line, "image "); {
 	case line == "mounted":
 		return false, fmt.Sprintf("实例 %d 客体 Vulkan 驱动补丁: 本次开机已挂上", i)
-	case isImage && sha == vkfix.FixSHA256:
+	case isImage && sha == profile.FixSHA256:
 		return false, fmt.Sprintf("实例 %d 镜像自带的客体驱动库已是补丁版，不用挂", i)
-	case isImage && sha == vkfix.OrigSHA256:
+	case isImage && sha == profile.OrigSHA256:
 		return true, fmt.Sprintf("实例 %d 客体 Vulkan 驱动补丁这次开机没挂上：实例已在运行，挂它要重启 zygote（会结束正在运行的应用），"+
 			"这次不挂；要挂就先关掉这个实例再启动", i)
 	case isImage && len(sha) == 64:
@@ -367,13 +392,13 @@ func validPackageName(s string) bool {
 // guest is in use (b from owedMountGate). pending: the fix applies to this image and is missing, or that cannot be
 // read; the setup marker then stays and msg is vulkanFixDeferredMessage's. Otherwise nothing is owed (mounted
 // already, patched image, unexpected image) and msg is vulkanFixCheckReport's.
-func vulkanFixDeferredReport(i int, out string, b mountBlocker, until, now time.Time) (pending bool, msg string) {
-	warn, checkMsg := vulkanFixCheckReport(i, out)
+func vulkanFixDeferredReport(i int, out string, b mountBlocker, until, now time.Time, profile vkfix.Profile) (pending bool, msg string) {
+	warn, checkMsg := vulkanFixCheckReport(i, out, profile)
 	if !warn {
 		return false, checkMsg
 	}
 	detail := b.detail
-	if sha, isImage := strings.CutPrefix(lastNonEmptyLine(out), "image "); !isImage || sha != vkfix.OrigSHA256 {
+	if sha, isImage := strings.CutPrefix(lastNonEmptyLine(out), "image "); !isImage || sha != profile.OrigSHA256 {
 		unknown := "这次开机挂没挂也读不出: " + orText(tail(out, 200), "无输出")
 		if detail == "" {
 			detail = unknown
@@ -423,9 +448,9 @@ func vulkanFixStatus(status string) (kind, rest string) {
 //
 // Two instances (separate modavd processes) may build it at once: each writes its own temp file and renames it
 // over the cache; one that cannot rename takes the other's file when that has the right hash.
-func (m *Manager) patchedVulkanLibrary(ctx context.Context, i int) string {
+func (m *Manager) patchedVulkanLibrary(ctx context.Context, i int, profile vkfix.Profile) string {
 	dir := m.Root.GuestPatchDir()
-	library := filepath.Join(dir, vkfix.CacheName)
+	library := filepath.Join(dir, profile.CacheName)
 	ioFail := func(err error) string {
 		m.Log.Warnf("实例 %d 客体 Vulkan 驱动补丁没挂: 本机读写补丁库失败（%s）: %v", i, library, err)
 		return ""
@@ -433,7 +458,7 @@ func (m *Manager) patchedVulkanLibrary(ctx context.Context, i int) string {
 
 	if data, err := os.ReadFile(library); err == nil {
 		digest := vkfix.SHA256Hex(data)
-		if digest == vkfix.FixSHA256 {
+		if digest == profile.FixSHA256 {
 			m.Log.Infof("实例 %d 客体 Vulkan 驱动补丁: 用本机缓存 %s", i, library)
 			return library
 		}
@@ -458,19 +483,19 @@ func (m *Manager) patchedVulkanLibrary(ctx context.Context, i int) string {
 		return ioFail(err)
 	}
 	m.Log.Infof("实例 %d 从客体拉到驱动原库（sha256 %s），本机生成补丁库", i, vkfix.SHA256Hex(data))
-	patched, err := vkfix.Patch(data)
+	patched, err := profile.Patch(data)
 	if err != nil {
 		m.Log.Warnf("实例 %d 客体 Vulkan 驱动补丁没挂: %v", i, err)
 		return ""
 	}
 	if err := writeFileReplace(library, patched, fmt.Sprintf("%d-%d", os.Getpid(), i)); err != nil {
-		if b, rerr := os.ReadFile(library); rerr == nil && vkfix.SHA256Hex(b) == vkfix.FixSHA256 {
+		if b, rerr := os.ReadFile(library); rerr == nil && vkfix.SHA256Hex(b) == profile.FixSHA256 {
 			// another start wrote the same file meanwhile (and may be pushing it right now)
 			return library
 		}
 		return ioFail(err)
 	}
-	m.Log.Infof("实例 %d 已在本机生成客体驱动补丁库（sha256 %s）: %s", i, vkfix.FixSHA256, library)
+	m.Log.Infof("实例 %d 已在本机生成客体驱动补丁库（sha256 %s）: %s", i, profile.FixSHA256, library)
 	return library
 }
 

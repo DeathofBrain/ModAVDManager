@@ -148,8 +148,10 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	headless := !window
 	args := buildLaunchArgs(inst.Name, port, memoryMB, headless)
 	m.pruneLogs(i)
-	stamp := time.Now().Format("20060102-150405")
-	logPath := filepath.Join(m.Root.LogsDir(), inst.Name+"-"+stamp+".log")
+	logPath, err := emulatorLogPath(m.Root.LogsDir(), inst.Name)
+	if err != nil {
+		return nil, errs.Wrap(errs.Internal, err, "创建模拟器日志失败: "+err.Error())
+	}
 
 	mode := "带窗口"
 	if headless {
@@ -159,8 +161,8 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	if n, ok := inst.CPU(); ok {
 		cpu = strconv.Itoa(n)
 	}
-	m.Log.Infof("启动魔改 AVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，气球开，不带声卡，ANDROID_EMU_VK_HIDE_REBAR=1）: emulator %s",
-		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, strings.Join(args, " "))
+	m.Log.Infof("启动魔改 AVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，气球开，不带声卡，ANDROID_EMU_VK_HIDE_REBAR=%s）: emulator %s",
+		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, hideRebar, strings.Join(args, " "))
 	return &launchPlan{args: args, logPath: logPath, memoryMB: memoryMB}, nil
 }
 
@@ -265,7 +267,7 @@ func (m *Manager) startEmulator(i int, plan *launchPlan) (host.Process, error) {
 	})
 	if err != nil {
 		return host.Process{}, errs.Wrap(errs.LaunchFailed, err,
-			fmt.Sprintf("魔改 AVD 实例 %d 启动失败（emulator.exe 没能运行）: %v", i, err))
+			fmt.Sprintf("魔改 AVD 实例 %d 启动失败（%s 没能运行）: %v", i, root.CurrentPlatform().Emulator, err))
 	}
 	return p, nil
 }
@@ -277,15 +279,11 @@ func (m *Manager) startEmulator(i int, plan *launchPlan) (host.Process, error) {
 //     the guest as device local only. Endfield waited for write-combine drains on every vertex write there (title
 //     screen 14.6 -> 60 fps); games that never touch that memory are unaffected, emulators before mas-27 ignore it.
 //
-// Appended after the private adb environment: host.StartOrphan / StartDetached keep the last of entries with the same
-// name (compared case-insensitively), so these override a user's own values, as AUTO-MAS env.update does.
+// Darwin keeps unified memory host-visible and does not inject the NVIDIA cache
+// settings. The backend keeps the last environment entry for each name, using
+// the platform's case rules, so these override inherited values.
 func (m *Manager) emulatorEnv(shaderCache string) []string {
-	return append(m.ADB.Env(),
-		"__GL_SHADER_DISK_CACHE=1",
-		"__GL_SHADER_DISK_CACHE_PATH="+shaderCache,
-		"__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1",
-		"ANDROID_EMU_VK_HIDE_REBAR=1",
-	)
+	return append(m.ADB.Env(), emulatorGPUEnv(shaderCache)...)
 }
 
 // logTail is the last n non-empty lines of the emulator log joined by " | " (AUTO-MAS _log_tail), for the error when
