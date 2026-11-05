@@ -294,7 +294,7 @@ func tail(s string, n int) string {
 // ---- locks -------------------------------------------------------------------------------------------------------
 
 // lockPath is <root>\avd\.mas_<i>.<kind>.lock, kind "start" (held for a whole start), "boot" (from launch until
-// Android booted: no re-registration then), "stop" or "watch" (held by the boot watch, see bootwatch.go).
+// Android booted: no re-registration then), "stop", "watch" (bootwatch.go), or "logcat" (the capture writer's life).
 func (m *Manager) lockPath(i int, kind string) string {
 	return filepath.Join(m.Root.AvdHome(), "."+root.AvdName(i)+"."+kind+".lock")
 }
@@ -368,7 +368,7 @@ func (m *Manager) guestLockPath(i int) string {
 // removeLockFiles deletes the lock files, the setup marker, create's progress / cancellation files and the boot record
 // (after Delete); best effort.
 func (m *Manager) removeLockFiles(i int) {
-	for _, kind := range []string{"start", "boot", "stop", "watch", "bridge", "create", "proxy", "disk"} {
+	for _, kind := range []string{"start", "boot", "stop", "watch", "logcat", "bridge", "create", "proxy", "disk"} {
 		os.Remove(m.lockPath(i, kind))
 	}
 	os.Remove(m.setupMarkerPath(i))
