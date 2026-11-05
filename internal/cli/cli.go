@@ -26,7 +26,7 @@
 //	window <i> show|hide                                  emu.WindowResult
 //	disk <i> trim                                         emu.DiskTrimResult {index,discard_max_bytes}
 //	disk <i> info                                         emu.DiskInfoResult {index,overlay,running,needs_shutdown,logical_bytes,on_disk_bytes?,allocated_bytes?,reclaimable_bytes?}
-//	disk <i> compact                                      emu.DiskCompactResult {index,overlay,before_on_disk_bytes,after_on_disk_bytes,freed_bytes}
+//	disk <i> compact                                      emu.DiskCompactResult (host sizes, freed_bytes >= 0, signed on_disk_delta_bytes, skipped, estimate/threshold)
 //	install <i> <apk>                                     emu.InstallResult
 //	shell <i> [--timeout S] <command...>                  emu.ShellResult
 //	adb <i> [--] <adb args...>                            no envelope: adb's own stdio and exit code
@@ -66,7 +66,7 @@
 //
 // Hidden subcommands, routed before any flag parsing or root lookup: __spawn (host.SpawnHelperMain, the helper of
 // host.StartOrphan), __vkprobe (emu.RunVulkanProbe, the Vulkan probe child process) and __bootwatch
-// (emu.RunBootWatch).
+// (emu.RunBootWatch), and __logcat (emu.RunLogcatCapture, the host logcat writer).
 package cli
 
 import (
@@ -160,6 +160,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return emu.RunVulkanProbe(stdout)
 		case emu.BootWatchArg:
 			return emu.RunBootWatch(args[1:], stderr)
+		case emu.LogcatCaptureArg:
+			return emu.RunLogcatCapture(args[1:], stderr)
 		}
 	}
 	// StartOrphan re-runs this executable as the spawn helper.

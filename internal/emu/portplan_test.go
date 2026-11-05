@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,6 +38,36 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case LogcatCaptureArg:
+			limit := logcatSegmentBytes
+			if os.Getenv(fakeLogcatStreamEnv) != "" {
+				limit = 128
+			}
+			os.Exit(runLogcatCapture(os.Args[2:], os.Stderr, limit))
+		case win.SpawnHelperArg:
+			os.Exit(win.SpawnHelperMain(os.Args[2:], os.Stdout))
+		case fakeLogcatLaunchArg:
+			r, err := root.New(os.Args[2])
+			if err != nil {
+				os.Exit(1)
+			}
+			i, _ := strconv.Atoi(os.Args[3])
+			pid, _ := strconv.ParseUint(os.Args[4], 10, 32)
+			created, _ := strconv.ParseUint(os.Args[5], 10, 64)
+			qemuScan = func([]int) map[int]win.Process {
+				return map[int]win.Process{i: {PID: uint32(pid), Created: created}}
+			}
+			win.OrphanHelper, _ = os.Executable()
+			path := New(r, nil).ensureLogcat(context.Background(), i)
+			fmt.Println(path)
+			if path == "" {
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
 	switch os.Getenv(fakeAdbEnv) {
 	case "server", "qemu":
 		os.Exit(fakeAdbServerMain())
@@ -121,6 +152,9 @@ func startFake(t *testing.T, exe, mode string, listen int, args ...string) win.P
 }
 
 func fakeAdbClientMain(args []string) int {
+	if slices.Contains(args, "logcat") && os.Getenv(fakeLogcatStreamEnv) != "" {
+		return fakeLogcatStream(args)
+	}
 	line, _ := json.Marshal(args)
 	if f, err := os.OpenFile(os.Getenv(fakeAdbLogEnv), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644); err == nil {
 		f.Write(append(line, '\n'))
@@ -203,6 +237,7 @@ func portPlanRoot(t *testing.T) (*root.Root, string) {
 // What status reports follows too.
 func TestPortPlanReachesEveryAdbCall(t *testing.T) {
 	r, log := portPlanRoot(t)
+	copyTestExe(t, filepath.Join(r.Dir, "tools", "modavd.exe"))
 	ctx := context.Background()
 	m := New(r, logx.Nop())
 	six := 6
