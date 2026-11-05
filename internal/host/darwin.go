@@ -3,6 +3,7 @@
 package host
 
 import (
+	"context"
 	"os"
 	"sync/atomic"
 	"time"
@@ -53,3 +54,7 @@ func Lock(path string, timeout time.Duration) (*FileLock, bool, error) {
 func Listeners() ([]Listener, error)             { return macos.Listeners() }
 func ListenerPID(port int) (uint32, bool, error) { return macos.ListenerPID(port) }
 func BusyPorts(ports []int) ([]int, error)       { return macos.BusyPorts(ports) }
+
+func DiskFree(path string) (uint64, error)               { return macos.DiskFree(path) }
+func AvailableMemoryMB() (uint64, error)                 { return macos.AvailableMemoryMB() }
+func MetalDevices(ctx context.Context) ([]string, error) { return macos.MetalDevices(ctx) }

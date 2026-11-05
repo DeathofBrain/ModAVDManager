@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -59,7 +60,7 @@ func (m *Manager) Check(ctx context.Context, opt CheckOptions) (*CheckResult, er
 	var accel, vulkan CheckItem
 	var wg sync.WaitGroup
 	wg.Go(func() { accel = m.accelerationItem(ctx, !opt.Refresh) })
-	wg.Go(func() { vulkan = vulkanItemFromProbe(m.probeVulkan(ctx, !opt.Refresh)) })
+	wg.Go(func() { vulkan = m.graphicsItem(ctx, !opt.Refresh) })
 	wg.Wait()
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
@@ -74,6 +75,7 @@ func (m *Manager) Check(ctx context.Context, opt CheckOptions) (*CheckResult, er
 		m.diskItemNow(),
 		memoryItemNow(memoryMB),
 	}
+	items = append(items, m.platformCheckItems()...)
 	if it, ok := portsItem(m.Root.Ports(), m.Root.CheckPorts()); ok {
 		items = append(items[:1], append([]CheckItem{it}, items[1:]...)...)
 	}
@@ -110,6 +112,7 @@ func (m *Manager) precheckBeforeLaunch(ctx context.Context, memoryMB int) error 
 		memoryItemNow(memoryMB),
 		m.diskItemNow(),
 	}
+	items = append(items, m.platformCheckItems()...)
 	if err := ctxErr(ctx); err != nil {
 		return err
 	}
@@ -124,7 +127,7 @@ func (m *Manager) precheckBeforeLaunch(ctx context.Context, memoryMB int) error 
 			return nil
 		})
 	}
-	vulkan := vulkanItemFromProbe(m.probeVulkan(ctx, true))
+	vulkan := m.graphicsItem(ctx, true)
 	if err := ctxErr(ctx); err != nil {
 		return err
 	}
@@ -148,10 +151,12 @@ func itemMessage(it CheckItem) string {
 	return it.Reason
 }
 
-// firstBlockingFailure is the first item with blocking && ok == false.
+// firstBlockingFailure is the first blocking failure. On macOS an unknown
+// blocking result also prevents readiness; a failed host query is no approval
+// to boot. The existing Windows treatment of unknown results is preserved.
 func firstBlockingFailure(items []CheckItem) (CheckItem, bool) {
 	for _, it := range items {
-		if it.Blocking && it.OK != nil && !*it.OK {
+		if it.Blocking && ((it.OK != nil && !*it.OK) || (runtime.GOOS == "darwin" && it.OK == nil)) {
 			return it, true
 		}
 	}
@@ -302,7 +307,7 @@ func emulatorItem(f emulatorFacts) CheckItem {
 	if !f.Present {
 		return CheckItem{
 			ID: "emulator", Title: title, OK: checkOK(false), Blocking: true,
-			Reason: "这个目录里还没有魔改 AVD 内测包", Advice: testPackageAdvice,
+			Reason: "这个目录里还没有魔改 AVD 内测包", Advice: platformPackageAdvice(),
 		}
 	}
 	version := f.Version
@@ -313,7 +318,7 @@ func emulatorItem(f emulatorFacts) CheckItem {
 		return CheckItem{
 			ID: "emulator", Title: title, OK: checkOK(false), Blocking: true,
 			Reason: fmt.Sprintf("这里的模拟器（%s）不是魔改 AVD 内测包里的版本，只支持内测包", version),
-			Advice: testPackageAdvice,
+			Advice: platformPackageAdvice(),
 		}
 	}
 	if f.HasBuild && f.Build >= root.MinModBuild {
@@ -435,10 +440,15 @@ func accelItem(res accelResult, summary string) CheckItem {
 	if summary == "" {
 		summary = "无输出"
 	}
+	backend, advice := "Windows 虚拟机监控程序平台", accelAdvice
+	if runtime.GOOS == "darwin" {
+		backend = "Hypervisor.framework"
+		advice = "请在 Apple Silicon Mac 本机运行 macos-arm64 版魔改 AVD，确认模拟器带 com.apple.security.hypervisor 签名权限；用 emulator -accel-check 检查 HVF"
+	}
 	return CheckItem{
 		ID: "acceleration", Title: "硬件虚拟化", OK: checkOK(false), Blocking: true,
-		Reason: fmt.Sprintf("硬件虚拟化（Windows 虚拟机监控程序平台）不可用，魔改 AVD 无法启动（检查结果：%s）", summary),
-		Advice: accelAdvice,
+		Reason: fmt.Sprintf("硬件虚拟化（%s）不可用，魔改 AVD 无法启动（检查结果：%s）", backend, summary),
+		Advice: advice,
 	}
 }
 
@@ -446,6 +456,10 @@ func accelItem(res accelResult, summary string) CheckItem {
 // before every boot, but several boots within seconds need not start it again.
 func (m *Manager) checkAcceleration(ctx context.Context, useCache bool) accelResult {
 	key := strings.ToLower(m.Root.Dir)
+	if runtime.GOOS == "darwin" {
+		// APFS can be case sensitive; different roots must not share a result.
+		key = m.Root.Dir
+	}
 	if useCache {
 		accelCache.Lock()
 		e, ok := accelCache.m[key]
@@ -487,10 +501,17 @@ func (m *Manager) checkAcceleration(ctx context.Context, useCache bool) accelRes
 	return res
 }
 
-// parseAccelCheck: usable only with exit code 0 and "usable" in the output (AUTO-MAS parse_accel_check).
+// ProbeHVF prints an OS version rather than "usable". Accept its known success
+// line only alongside a successful process exit; keep the Windows parser intact.
+var hvfNameVersion = regexp.MustCompile(`(?m)^Hypervisor\.Framework OS X Version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)[\t ]*\r?$`)
+
 func parseAccelCheck(code int, output string) accelResult {
 	text := strings.TrimSpace(output)
-	return accelResult{OK: code == 0 && strings.Contains(strings.ToLower(text), "usable"), Detail: text}
+	ready := strings.Contains(strings.ToLower(text), "usable")
+	if runtime.GOOS == "darwin" {
+		ready = root.CurrentPlatform().GuestABI == "arm64-v8a" && hvfNameVersion.MatchString(text)
+	}
+	return accelResult{OK: code == 0 && ready, Detail: text}
 }
 
 // accelSummary drops the frame lines of the -accel-check output ("accel:", the return code, "accel") and keeps the
@@ -527,8 +548,20 @@ var accelNameVersion = regexp.MustCompile(`(\w+)\s*\(([\d.]+)\)`)
 // accelOKText: "WHPX(10.0.26200) is installed and usable." -> "可用（WHPX 10.0.26200）"; just "可用" when the name and
 // version cannot be found.
 func accelOKText(summary string) string {
+	if runtime.GOOS == "darwin" {
+		if mm := hvfNameVersion.FindStringSubmatch(summary); mm != nil {
+			return fmt.Sprintf("可用（HVF；macOS %s）", mm[1])
+		}
+	}
 	if mm := accelNameVersion.FindStringSubmatch(summary); mm != nil {
 		return fmt.Sprintf("可用（%s %s）", mm[1], mm[2])
 	}
 	return "可用"
+}
+
+func platformPackageAdvice() string {
+	if runtime.GOOS == "darwin" {
+		return "请把魔改 AVD 的 macos-arm64 内测包解压到这个目录（解压后应有 sdk/emulator）"
+	}
+	return testPackageAdvice
 }
