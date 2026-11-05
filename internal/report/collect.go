@@ -170,7 +170,7 @@ func errText(err error) string {
 // sdk is the SDK directory for reading files: sdkDir made absolute against the root.
 func (c *collector) sdk() string { return absUnder(c.root, c.sdkDir) }
 
-func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (*CollectResult, error) {
+func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (result *CollectResult, err error) {
 	if opt.now == nil {
 		opt.now = time.Now
 	}
@@ -183,6 +183,7 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (*
 	if opt.explorer == nil {
 		opt.explorer = openExplorer
 	}
+	rootDir = longPath(rootDir)
 	start := opt.now()
 	stamp := start.Format("20060102-150405")
 	outDir := opt.OutDir
@@ -199,17 +200,32 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (*
 			stageDir = os.TempDir()
 		}
 	}
-	stageDir, err := filepath.Abs(stageDir)
+	stageDir, err = filepath.Abs(stageDir)
 	if err != nil {
 		return nil, errs.Wrap(errs.InvalidArgument, err, "暂存目录写法不对："+opt.StageDir)
 	}
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return nil, errs.Wrap(errs.Internal, err, "建不了暂存目录："+err.Error())
 	}
+	stageDir = longPath(stageDir)
 	stage := filepath.Join(stageDir, "modavd-collect-"+stamp+"-"+strconv.Itoa(opt.pid))
 	if err := os.Mkdir(stage, 0o755); err != nil {
 		return nil, errs.Wrap(errs.Internal, err, "建不了暂存目录："+err.Error())
 	}
+	defer func() {
+		// Cancellation before the ZIP is complete follows the same cleanup policy in every phase. Once zipStage
+		// succeeds, the complete result stands even if Ctrl+C arrives while it is being printed.
+		if err == nil || ctx.Err() == nil {
+			return
+		}
+		e := errs.Wrap(errs.Canceled, ctx.Err(), "已取消")
+		if opt.KeepStage {
+			e.WithAdvice("收集到的文件留在：" + stage)
+		} else {
+			_ = os.RemoveAll(stage)
+		}
+		result, err = nil, e
+	}()
 
 	c := &collector{ctx: ctx, root: rootDir, h: h, opt: opt, stage: stage, start: start, adbPort: root.DefaultAdbServerPort}
 	c.progress("魔改 AVD 问题信息收集")
@@ -233,9 +249,7 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (*
 	c.step("系统事件日志", c.events)
 	c.step("现场截图与状态", c.live)
 	if err := ctx.Err(); err != nil {
-		// Ctrl+C: no half-collected zip; the stage directory is ours to remove
-		_ = os.RemoveAll(stage)
-		return nil, errs.Wrap(errs.Canceled, err, "已取消")
+		return nil, err
 	}
 
 	elapsed := opt.now().Sub(start).Seconds()
@@ -271,7 +285,7 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (*
 	if exists(zipPath) {
 		zipPath = filepath.Join(outDir, collectZipStart+stamp+"-"+strconv.Itoa(opt.pid)+".zip")
 	}
-	entries, err := zipStage(zipPath, stage)
+	entries, err := zipStage(ctx, zipPath, stage)
 	if err != nil {
 		return nil, packFailed(err, stage)
 	}
@@ -1464,11 +1478,14 @@ func (c *collector) liveCommand(liveDir, name, serial, tag, kind string, args []
 // zipStage writes every file of the stage into dst: summary.txt first, then by entry name (Sort-Object order),
 // names relative to the stage with '/'. Disk images, snapshots, user data and AUTO-MAS config / data are never
 // staged; if one ever were, it is left out here too.
-func zipStage(dst, stage string) ([]string, error) {
+func zipStage(ctx context.Context, dst, stage string) ([]string, error) {
 	type item struct{ path, name string }
 	var files []item
 	queue := []item{{stage, ""}}
 	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		it := queue[0]
 		queue = queue[1:]
 		ents, err := listDir(it.path, true)
@@ -1493,6 +1510,9 @@ func zipStage(dst, stage string) ([]string, error) {
 		}
 		return cultureCompare(files[i].name, files[j].name) < 0
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := os.Create(dst)
 	if err != nil {
 		return nil, err
@@ -1503,7 +1523,7 @@ func zipStage(dst, stage string) ([]string, error) {
 		if forbiddenEntry(it.name) {
 			continue
 		}
-		if err = addZipFile(zw, it.path, it.name); err != nil {
+		if err = addZipFile(ctx, zw, it.path, it.name); err != nil {
 			break
 		}
 		names = append(names, it.name)
@@ -1514,6 +1534,9 @@ func zipStage(dst, stage string) ([]string, error) {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		os.Remove(dst)
 		return nil, err
@@ -1521,7 +1544,10 @@ func zipStage(dst, stage string) ([]string, error) {
 	return names, nil
 }
 
-func addZipFile(zw *zip.Writer, path, name string) error {
+func addZipFile(ctx context.Context, zw *zip.Writer, path, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	in, err := os.Open(path)
 	if err != nil {
 		return err
@@ -1536,12 +1562,27 @@ func addZipFile(zw *zip.Writer, path, name string) error {
 		return err
 	}
 	h.Name, h.Method = name, zip.Deflate
+	// FileInfoHeader converts the timestamp to UTC; the package script stores local DOS fields.
+	h.Modified = fi.ModTime().In(time.Local)
 	w, err := zw.CreateHeader(h)
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(w, in)
+	_, err = io.Copy(w, zipReader{ctx: ctx, r: in})
 	return err
+}
+
+// Wrapping the source also prevents io.Copy from taking os.File.WriteTo and bypassing the per-read cancel check.
+type zipReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r zipReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
 
 // forbiddenEntry: disk images (*.img, *.qcow2), snapshots, user data and AUTO-MAS's config\ and data\.
