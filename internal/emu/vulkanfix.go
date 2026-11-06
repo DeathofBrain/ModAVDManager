@@ -33,15 +33,19 @@ func (m *Manager) guestVulkanProfile(i int) (vkfix.Profile, error) {
 	abi := cfg.Value("abi.type")
 	profile, supported := vkfix.ForABI(abi)
 	if !supported {
+		if abi == "arm64-v8a" {
+			return vkfix.Profile{}, fmt.Errorf("ARM64 API35 Vulkan 补丁尚未验收，保留镜像原库；不套用 API34 补丁，也不挂载或重启 zygote")
+		}
 		return vkfix.Profile{}, fmt.Errorf("客体架构 %q 没有适用的 Vulkan 补丁", abi)
 	}
 	return profile, nil
 }
 
 // ensureVulkanFix bind-mounts the patched guest Vulkan encoder made on this host over /vendor/lib64/libvulkan_enc.so
-// and restarts zygote (AUTO-MAS _ensure_vulkan_fix; launcher -VulkanFix), on every instance for every game (user
+// and restarts zygote (AUTO-MAS _ensure_vulkan_fix; launcher -VulkanFix), for verified API34 x86_64 guests (user
 // 10-16). The patch (internal/vkfix) fixes Star Rail's descriptor templates (khrfix) and Endfield's unlocked
-// vkBindImageMemory lookups (bindlock); games that use neither path are unaffected.
+// vkBindImageMemory lookups (bindlock); games that use neither path are unaffected. ARM64 API35 keeps its original
+// libraries until those separate Vulkan workloads have been validated; GLES3.1 capability does not prove either fix.
 //
 //   - vulkanfix.sh first checks whether this boot already has it mounted (nothing to do then), then the image
 //     library's hash against the configured guest ABI's profile; the patched copy is cached in the guest's

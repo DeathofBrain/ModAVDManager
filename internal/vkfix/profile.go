@@ -1,7 +1,7 @@
 package vkfix
 
-// Profile keeps every architecture-specific byte contract together. Libraries
-// and caches from one guest ABI must never be accepted by the other patcher.
+// Profile keeps a verified guest library's byte contract together. An ABI alone
+// does not make a different Android release compatible with a binary patch.
 type Profile struct {
 	OrigSHA256 string
 	FixSHA256  string
@@ -13,18 +13,14 @@ func X86Profile() Profile {
 	return Profile{OrigSHA256: OrigSHA256, FixSHA256: FixSHA256, CacheName: CacheName, Patch: Patch}
 }
 
-func ARM64Profile() Profile {
-	return Profile{OrigSHA256: ARM64OrigSHA256, FixSHA256: ARM64FixSHA256, CacheName: ARM64CacheName, Patch: PatchARM64}
-}
-
 // ForABI selects a patch contract for the instance's guest ABI, independently
-// of the manager's host architecture. Unknown ABIs must never inherit x86 code.
+// of the manager's host architecture. Only the API34 x86_64 patch is verified.
+// The Mac API35 image has no /vendor/lib64/libvulkan_enc.so; its different Vulkan
+// HAL must not inherit either the retired API34 ARM64 edits or the x86 patch.
 func ForABI(abi string) (Profile, bool) {
 	switch abi {
 	case "x86_64":
 		return X86Profile(), true
-	case "arm64-v8a":
-		return ARM64Profile(), true
 	default:
 		return Profile{}, false
 	}

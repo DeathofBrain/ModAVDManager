@@ -54,6 +54,11 @@ func buildLaunchArgs(avdName string, console, memoryMB int, headless bool) []str
 	if headless {
 		args = append(args, "-no-window", "-no-boot-anim")
 	}
+	if p := root.CurrentPlatform(); p.MirrorOS == "macos" && p.GuestABI == "arm64-v8a" {
+		// API35 uses guest ANGLE over Vulkan/MoltenVK for GLES3.1 on Apple
+		// Silicon. -gpu host alone selects the older host GLES translation path.
+		args = append(args, "-feature", "GuestAngle,Vulkan")
+	}
 	return append(args,
 		"-feature", "-QuickbootFileBacked",
 		"-feature", "-VirtioSndCard",
