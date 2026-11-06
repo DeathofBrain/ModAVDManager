@@ -213,6 +213,7 @@ func jsonOneLine(v *jsonord.Value) string {
 
 // ---- layout ------------------------------------------------------------------------------------------------------
 
+// SystemImageDir retains the Windows/AUTO-MAS layout; other hosts use Platform.SystemImageDir.
 const (
 	SDKDir          = "sdk"
 	AvdDir          = "avd"
@@ -762,6 +763,7 @@ type ComponentStatus struct {
 }
 
 // Component names and fixed data (AUTO-MAS constants.py).
+// SystemImageName retains the Windows name; other hosts use Platform.SystemImageName.
 const (
 	PlatformToolsName = "平台工具（adb）"
 	EmulatorName      = "Android 模拟器（emulator）"
