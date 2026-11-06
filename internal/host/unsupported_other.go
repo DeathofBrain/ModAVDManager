@@ -38,9 +38,6 @@ func L3Groups() []L3Group { return nil }
 // SharedMemoryExists calls OpenFileMappingW for the Windows named mapping.
 func SharedMemoryExists(string) bool { return false }
 
-// DiskFree calls GetDiskFreeSpaceExW for the Windows volume.
-func DiskFree(string) (uint64, error) { return 0, errUnsupported }
-
 // GetCompressedFileSize calls GetCompressedFileSizeW for the Windows file.
 func GetCompressedFileSize(string) (uint64, error) { return 0, errUnsupported }
 
@@ -49,9 +46,6 @@ func VolumeFileSystem(string) (string, error) { return "", errUnsupported }
 
 // MoveFileReplaceThrough calls MoveFileExW (REPLACE_EXISTING | WRITE_THROUGH).
 func MoveFileReplaceThrough(string, string) error { return errUnsupported }
-
-// AvailableMemoryMB calls GlobalMemoryStatusEx on Windows.
-func AvailableMemoryMB() (uint64, error) { return 0, errUnsupported }
 
 // Protect calls CryptProtectData (DPAPI) for the current Windows user.
 func Protect([]byte, []byte) ([]byte, error) { return nil, errUnsupported }
