@@ -72,9 +72,12 @@ func (f *fetcher) platformIdle() error {
 	if err != nil {
 		return errs.Wrap(errs.Internal, err, "无法确认 SDK 是否正在使用")
 	}
-	sdk, err := filepath.EvalSymlinks(f.sdk)
+	sdk, err := os.Stat(f.sdk)
 	if err != nil {
-		return errs.Wrap(errs.Internal, err, "无法解析 SDK 目录")
+		return errs.Wrap(errs.Internal, err, "无法读取 SDK 目录")
+	}
+	if !sdk.IsDir() {
+		return errs.New(errs.Internal, "SDK 不是目录")
 	}
 	platform := root.CurrentPlatform()
 	for _, p := range processes {
@@ -93,15 +96,44 @@ func (f *fetcher) platformIdle() error {
 			}
 			continue
 		}
-		if real, err := filepath.EvalSymlinks(path); err == nil {
-			path = real
+		inside, err := executableWithinSDK(path, sdk)
+		if err != nil {
+			if !p.Alive() {
+				continue
+			}
+			return errs.Wrap(errs.Busy, err, "无法确认 SDK 是否正在被 "+p.Name+" 使用，暂不补全组件").
+				WithAdvice("请先自行关闭模拟器和私有 adb server，再重试")
 		}
-		if within(path, sdk) && p.Alive() {
+		if inside && p.Alive() {
 			return errs.Newf(errs.Busy, "SDK 正在被 %s（PID %d）使用，暂不补全组件", p.Name, p.PID).
 				WithAdvice("请先自行关闭模拟器和私有 adb server，再重试")
 		}
 	}
 	return nil
+}
+
+// Compare real ancestor identities: path spelling alone cannot distinguish a
+// case alias on one volume from separate directories on a case-sensitive one.
+// An unreadable path is unknown, never evidence that the SDK is idle.
+func executableWithinSDK(path string, sdk os.FileInfo) (bool, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	for dir := filepath.Dir(real); ; {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(info, sdk) {
+			return true, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false, nil
+		}
+		dir = parent
+	}
 }
 
 // Count downloads and expansion on their actual volumes; SDK may be a mount
