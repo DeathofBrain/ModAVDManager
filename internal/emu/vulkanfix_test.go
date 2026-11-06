@@ -66,7 +66,7 @@ func TestVulkanFixCheckReport(t *testing.T) {
 		{"", true, "无输出"},
 	}
 	for _, c := range cases {
-		warn, msg := vulkanFixCheckReport(4, c.out)
+		warn, msg := vulkanFixCheckReport(4, c.out, vkfix.X86Profile())
 		if warn != c.warn || !strings.HasPrefix(msg, "实例 4 ") || !strings.Contains(msg, c.has) {
 			t.Errorf("vulkanFixCheckReport(%q) = %v %q", c.out, warn, msg)
 		}
@@ -202,7 +202,7 @@ func TestVulkanFixDeferredReport(t *testing.T) {
 		{"unexpected image", "image " + strings.Repeat("cd", 32) + "\n", foregroundBlocker(""), until, false, "不是预期的镜像版本"},
 	}
 	for _, c := range cases {
-		pending, msg := vulkanFixDeferredReport(3, c.out, c.b, c.until, now)
+		pending, msg := vulkanFixDeferredReport(3, c.out, c.b, c.until, now, vkfix.X86Profile())
 		okMsg := msg == c.msg
 		if !strings.HasPrefix(c.msg, "实例") {
 			okMsg = strings.HasPrefix(msg, "实例 3 ") && strings.Contains(msg, c.msg)
@@ -376,7 +376,7 @@ func TestMountVulkanFix(t *testing.T) {
 			f.onPush = takeInstall
 		}
 
-		restarted, pending := m.mountVulkanFix(context.Background(), 3, f.io(), c.owed, until)
+		restarted, pending := m.mountVulkanFix(context.Background(), 3, f.io(), vkfix.X86Profile(), c.owed, until)
 		install.Unlock()
 
 		if restarted != c.restarted || pending != c.pending {

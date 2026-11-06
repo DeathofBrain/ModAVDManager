@@ -59,8 +59,8 @@ type bootSetup int
 
 const (
 	// setupAdopted: the instance was already running and nothing is owed: the guest Vulkan fix is only checked (the
-	// zygote restart of mounting it would end the game running there), and the IME channel is judged by the build
-	// alone (the emulator log may belong to another boot).
+	// zygote restart of mounting it would end the game running there). Windows can identify the IME channel by
+	// its build; other hosts cannot confirm it from an unverified old emulator log.
 	setupAdopted bootSetup = iota
 	// setupLaunched: this call launched qemu; nobody can have used the guest yet, so everything runs.
 	setupLaunched
@@ -139,6 +139,9 @@ func (m *Manager) afterBoot(ctx context.Context, inst *avd.Instance, mode bootSe
 		func() { m.setupBalloon(ctx, i) },
 		func() {
 			// 6) cpuinfo of the ARM translation layer: one entry per vCPU, or Unity picks the lowest quality
+			if !bridgeGuestSupported(inst.Config) {
+				return // native ARM64 guests have no x86-to-ARM translation layer
+			}
 			if remote, ok := m.pushGuestScript(ctx, i, guest.CPUInfoBind); ok {
 				res := m.shell(ctx, i, "su 0 sh "+remote, 0)
 				m.Log.Infof("实例 %d ARM 转译 cpuinfo: %s 核", i, orText(strings.TrimSpace(res.Out), "?"))
@@ -247,6 +250,10 @@ func affinityLockPath() string {
 // on the host, production's included, is only read. Returns the note for the log and the plan (its Spare sizes the
 // busy loops of setupIdlepoll).
 func (m *Manager) tuneHostScheduling(p host.Process, cores int) (string, hostPlan) {
+	if !root.CurrentPlatform().Windows() {
+		plan := planHost(nil, hostCPUs(nil), m.otherQemus(p, cores), cores)
+		return "使用系统默认调度", plan
+	}
 	var notes []string
 	if err := host.SetAboveNormalPriority(p); err != nil {
 		notes = append(notes, fmt.Sprintf("设优先级失败（%v）", err))
