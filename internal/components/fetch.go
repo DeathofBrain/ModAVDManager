@@ -30,9 +30,9 @@ import (
 	"modavd/internal/buildinfo"
 	"modavd/internal/download"
 	"modavd/internal/errs"
+	"modavd/internal/host"
 	"modavd/internal/logx"
 	"modavd/internal/root"
-	"modavd/internal/win"
 )
 
 // Mirror is one download source: a base URL the component paths are relative to.
@@ -51,7 +51,7 @@ var defaultMirrors = []Mirror{
 var (
 	fetchGOOS          = runtime.GOOS
 	componentCatalogue = root.SDKComponents
-	diskFree           = win.DiskFree
+	diskFree           = host.DiskFree
 )
 
 // License returns the Android SDK license text and the mirror it came from, read from the mirrors of source the
@@ -337,7 +337,7 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		f.openLog()
 		defer f.closeLog()
 	}
-	var lock *win.FileLock
+	var lock *host.FileLock
 	defer func() {
 		if err != nil {
 			if len(f.asides) > 0 {
@@ -513,9 +513,9 @@ func isASCII(s string) bool {
 // lock is logs\fetch-components.lock: one fetch per root at a time (update does the same with .update\modavd.lock).
 // Only its holder clears sdk\.staging, where another run could be unpacking. The system drops it when the process
 // ends.
-func (f *fetcher) lock() (*win.FileLock, error) {
+func (f *fetcher) lock() (*host.FileLock, error) {
 	p := filepath.Join(f.r.LogsDir(), "fetch-components.lock")
-	l, ok, err := win.TryLock(p)
+	l, ok, err := host.TryLock(p)
 	if err != nil {
 		return nil, errs.Wrap(errs.Internal, err, "补全组件的锁文件打不开: "+p)
 	}
