@@ -305,7 +305,7 @@ func (m *Manager) emulatorFacts() emulatorFacts {
 // other revisions require explicit validation before they can launch instances.
 func platformEmulatorItem(f emulatorFacts) CheckItem {
 	if root.CurrentPlatform().MirrorOS == "macos" && f.Present && !f.SelfBuilt {
-		ok := f.Version == "37.2.13" || f.Version == "37.2.13.0"
+		ok := root.OfficialEmulatorVersionSupported(f.Version)
 		item := CheckItem{ID: "emulator", Title: "模拟器版本", OK: checkOK(ok), Blocking: true,
 			Reason: fmt.Sprintf("官方 ARM64 Emulator %s", f.Version)}
 		if !ok {
