@@ -160,6 +160,7 @@ Apple Silicon macOS 的组件下载/导入使用 API35 Google Play ARM64 r9，�
 
 - 只有点「检查更新」才联网；没有自动检查。
 - 更新源和 CDK 是当前系统用户的设置，命令行更新时按它来。Windows 使用 `%LOCALAPPDATA%\ModAVD\update-settings.json` 和 DPAPI；macOS 使用 `~/Library/Application Support/ModAVD/update-settings.json`，CDK 的随机 AES-GCM 包装密钥保存在当前用户的 Keychain。钥匙串锁定或未授权时保存失败，不弹授权框，不保存明文密钥。
+- macOS 原生更新由 CLI 的 `update prepare/install --package ZIP --sha256 HEX` 选择本地签名包；暂存后可离线 `install/recover`。没有兼容的 `macos-arm64` 远端资产时，检查结果为 `update_unavailable`。界面不提供安装入口；包协议见 `internal/update/MACOS.md`。
 
 ## 生命周期
 
