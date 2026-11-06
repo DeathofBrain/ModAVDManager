@@ -1,8 +1,8 @@
 package playstore
 
 // Reading files out of an Android emulator system.img, read-only: a GPT disk whose "super" partition holds the
-// dynamic (logical) partitions (liblp metadata), each an ext4 file system. Only what these images use is supported:
-// linear extents on the super partition itself, ext4 with extents (no inline data, no meta_bg). Anything else is an
+// dynamic (logical) partitions (liblp metadata), with ext4 or EROFS file systems. Only what these images use is
+// supported: linear super extents, ext4 extents, and EROFS flat files or compact LZ4 clusters. Anything else is an
 // error, never a guess; the callers check every file against its pinned size and SHA-256 anyway.
 
 import (
@@ -35,7 +35,7 @@ func Extract(img string, files []File, dir string) error {
 	if err != nil {
 		return err
 	}
-	fss := map[string]*ext4{}
+	fss := map[string]imageFS{}
 	for _, file := range files {
 		fs := fss[file.Partition]
 		if fs == nil {
@@ -43,7 +43,7 @@ func Extract(img string, files []File, dir string) error {
 			if !ok {
 				return fmt.Errorf("镜像里没有 %s 分区", file.Partition)
 			}
-			if fs, err = openExt4(p); err != nil {
+			if fs, err = openImageFS(p); err != nil {
 				return fmt.Errorf("%s 分区：%w", file.Partition, err)
 			}
 			fss[file.Partition] = fs
@@ -55,21 +55,23 @@ func Extract(img string, files []File, dir string) error {
 	return nil
 }
 
-func extractOne(fs *ext4, file File, dir string) error {
-	ino, err := fs.lookup(file.Path)
-	if err != nil {
-		return err
+// imageFS checks each requested file's type and pinned size before copying its bytes.
+type imageFS interface {
+	copyFile(path string, size int64, w io.Writer) (int64, error)
+}
+
+func openImageFS(p *partition) (imageFS, error) {
+	magic := make([]byte, 4)
+	if _, err := p.ReadAt(magic, 1024); err != nil {
+		return nil, err
 	}
-	in, err := fs.inode(ino)
-	if err != nil {
-		return err
+	if binary.LittleEndian.Uint32(magic) == erofsMagic {
+		return openEROFS(p)
 	}
-	if in.mode&0xF000 != 0x8000 {
-		return errors.New("不是普通文件")
-	}
-	if in.size != file.Size {
-		return fmt.Errorf("大小是 %d，应为 %d", in.size, file.Size)
-	}
+	return openExt4(p)
+}
+
+func extractOne(fs imageFS, file File, dir string) error {
 	dst := filepath.Join(dir, file.Name)
 	tmp := dst + ".part"
 	out, err := os.Create(tmp)
@@ -77,7 +79,7 @@ func extractOne(fs *ext4, file File, dir string) error {
 		return err
 	}
 	h := sha256.New()
-	_, err = fs.copyData(in, io.MultiWriter(out, h))
+	_, err = fs.copyFile(file.Path, file.Size, io.MultiWriter(out, h))
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
@@ -356,6 +358,24 @@ func openExt4(p *partition) (*ext4, error) {
 	fs.groups = uint32((blocks - uint64(firstData) + uint64(perGroupBlocks) - 1) / uint64(perGroupBlocks))
 	fs.descTable = (firstData + 1) * fs.blockSize
 	return fs, nil
+}
+
+func (fs *ext4) copyFile(path string, size int64, w io.Writer) (int64, error) {
+	ino, err := fs.lookup(path)
+	if err != nil {
+		return 0, err
+	}
+	in, err := fs.inode(ino)
+	if err != nil {
+		return 0, err
+	}
+	if in.mode&0xF000 != 0x8000 {
+		return 0, errors.New("不是普通文件")
+	}
+	if in.size != size {
+		return 0, fmt.Errorf("大小是 %d，应为 %d", in.size, size)
+	}
+	return fs.copyData(in, w)
 }
 
 func (fs *ext4) read(off, n int64) ([]byte, error) {

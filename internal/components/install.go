@@ -113,11 +113,16 @@ func (f *fetcher) installPlayStore(ctx context.Context, c root.SDKComponent, zip
 	if err := f.playStoreFromZip(ctx, c, zipPath, staging, out); err != nil {
 		return "", err
 	}
-	return f.finishPlayStore(c, out, PlayStoreFromDownload)
+	return f.finishPlayStore(ctx, c, out, PlayStoreFromDownload)
 }
 
 // playStoreStaging is a fresh sdk\.staging\<id> and the directory in it the five files are gathered in.
 func (f *fetcher) playStoreStaging(c root.SDKComponent) (staging, out string, err error) {
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", "", err
+		}
+	}
 	staging = filepath.Join(f.stagingRoot(), c.ID)
 	f.removeStaging(staging)
 	out = filepath.Join(staging, root.PlayStoreDir)
@@ -131,9 +136,10 @@ func (f *fetcher) playStoreStaging(c root.SDKComponent) (staging, out string, er
 // staging\system.img, read without mounting anything (playStoreExtract checks each file's size and SHA-256) and
 // deleted again, whether that worked or not.
 func (f *fetcher) playStoreFromZip(ctx context.Context, c root.SDKComponent, zipPath, staging, out string) error {
-	f.where = "从 " + filepath.Base(zipPath) + " 解出 " + playstore.ImageMember
+	member := playstore.CurrentProfile().ImageMember
+	f.where = "从 " + filepath.Base(zipPath) + " 解出 " + member
 	img := filepath.Join(staging, "system.img")
-	err := f.extractMember(ctx, c, zipPath, playstore.ImageMember, img)
+	err := f.extractMember(ctx, c, zipPath, member, img)
 	if err == nil {
 		f.where = "从 system.img 取出 Google Play 商店的文件"
 		f.say("  从系统镜像里取出商店、Play 服务、GSF、合作伙伴设置…")
@@ -149,13 +155,29 @@ func (f *fetcher) playStoreFromZip(ctx context.Context, c root.SDKComponent, zip
 
 // finishPlayStore writes out's source.properties (with where the files came from), checks out as a whole (Complete:
 // every pin and the revision) and moves it into sdk\playstore.
-func (f *fetcher) finishPlayStore(c root.SDKComponent, out, source string) (setAside string, err error) {
+func (f *fetcher) finishPlayStore(ctx context.Context, c root.SDKComponent, out, source string) (setAside string, err error) {
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", err
+		}
+	}
 	props := c.Properties + playStoreSourceKey + "=" + source + "\n"
 	if err := os.WriteFile(filepath.Join(out, "source.properties"), []byte(props), 0o644); err != nil {
 		return "", errs.Wrap(errs.Internal, err, "写不了 source.properties："+err.Error())
 	}
 	if !c.Complete(out) {
 		return "", rejected("%s 的文件校验失败", c.FetchName)
+	}
+	if ctx.Err() != nil {
+		return "", canceled(ctx)
+	}
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", err
+		}
+		if err := f.platformIdle(); err != nil {
+			return "", err
+		}
 	}
 	return f.place(c, out)
 }
@@ -168,28 +190,47 @@ func (f *fetcher) extractMember(ctx context.Context, c root.SDKComponent, zipPat
 		return rejected("压缩包打不开：%v", err)
 	}
 	defer zr.Close()
+	if f.darwin() && len(zr.File) > 20000 {
+		return rejected("压缩包条目过多")
+	}
+	var member *zip.File
 	for _, e := range zr.File {
 		if strings.ReplaceAll(e.Name, `\`, "/") != name {
 			continue
 		}
-		if e.Flags&1 != 0 {
-			return rejected("压缩包里的 %s 是加密的", e.Name)
+		if member != nil {
+			return rejected("压缩包里的 %s 出现了两次", name)
 		}
-		if e.Method != zip.Store && e.Method != zip.Deflate {
-			return rejected("压缩包里 %s 用了不支持的压缩方式 %d", e.Name, e.Method)
+		member = e
+		if !f.darwin() {
+			break
 		}
-		m := newMeter(f.o.Progress, "extracting", c.FetchName, max(int64(e.UncompressedSize64), 1), 0)
-		n, err := f.extractFile(ctx, e, dest, make([]byte, 1<<20), 0, m)
-		if err != nil {
-			return err
-		}
-		if n != int64(e.UncompressedSize64) {
-			return rejected("解压出的 %s 大小不对", e.Name)
-		}
-		m.finish(n)
-		return nil
 	}
-	return rejected("压缩包里没有 %s", name)
+	if member == nil {
+		return rejected("压缩包里没有 %s", name)
+	}
+	if f.darwin() {
+		if member.Name != name || !member.Mode().IsRegular() ||
+			member.UncompressedSize64 != uint64(playstore.CurrentProfile().ImageMemberSize) {
+			return rejected("压缩包里的 %s 类型、路径或大小与组件清单不符", name)
+		}
+	}
+	if member.Flags&1 != 0 {
+		return rejected("压缩包里的 %s 是加密的", name)
+	}
+	if member.Method != zip.Store && member.Method != zip.Deflate {
+		return rejected("压缩包里 %s 用了不支持的压缩方式 %d", name, member.Method)
+	}
+	m := newMeter(f.o.Progress, "extracting", c.FetchName, max(int64(member.UncompressedSize64), 1), 0)
+	n, err := f.extractFile(ctx, member, dest, make([]byte, 1<<20), 0, m)
+	if err != nil {
+		return err
+	}
+	if n != int64(member.UncompressedSize64) {
+		return rejected("解压出的 %s 大小不对", name)
+	}
+	m.finish(n)
+	return nil
 }
 
 // place moves an unpacked, checked component directory (extracted) into sdk\<target> (the end of the script's

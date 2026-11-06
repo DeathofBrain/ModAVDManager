@@ -24,9 +24,9 @@ const maxImportFiles = 8
 
 var (
 	// maxImportPart is the largest file worth receiving: the Play image's zip (the five files are far smaller).
-	maxImportPart int64 = playstore.ImageSize
+	maxImportPart int64 = playstore.CurrentProfile().ImageSize
 	// maxImportBody bounds a whole import upload: the zip and the five files, with room for the multipart framing.
-	maxImportBody = maxImportPart + 2*playstore.ExtractedBytes() + 1<<20
+	maxImportBody = maxImportPart + 2*playstore.CurrentProfile().ExtractedBytes() + 1<<20
 )
 
 // handlePlayStore is POST /api/instances/{i}/playstore-install and playstore-uninstall: a job running emu's

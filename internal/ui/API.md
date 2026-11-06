@@ -138,9 +138,11 @@ data: {}                    每 15 秒
 
 ### Google Play 商店 `PlayStoreStatus`、`PlayStoreImportResult`、`PlayStoreResult`
 
+Apple Silicon macOS 的组件下载/导入使用 API35 Google Play ARM64 r9，归档 `arm64-v8a-35_r09.zip`；实例内装卸仍返回 `unsupported`。Windows 保持 API34 x86_64 r14。`PlayStoreStatus` 增加 `archive`（可导入的官方归档名）、`download_bytes`（归档大小）和 `install_supported`（当前宿主是否已支持实例装卸）；界面按这些字段展示大小、导入提示和能力边界。macOS 的 `ready` 同时检查 `source.properties` 的 ABI、API 和镜像类型，仍不替代导入/下载时的摘要校验。
+
 商店是可选的：根目录里留五个文件（`sdk\playstore\`，补全组件时勾选下载，或者导入自己的文件），每台实例要的时候再装进去；新建实例不带。
 
-- `PlayStoreStatus`（`GET /api/components` 的 `play_store`，和 `modavd components status --json` 的 `data.play_store` 相同）：`{"dir","ready","source","version","files":[{"name","guest","size","present"}]}`。
+- `PlayStoreStatus`（`GET /api/components` 的 `play_store`，和 `modavd components status --json` 的 `data.play_store` 相同）：`{"dir","ready","source","version","archive","download_bytes","install_supported","files":[{"name","guest","size","present"}]}`。
   - `ready`：五个文件都在、`source.properties` 的版本对（只看大小，SHA-256 在放进来和装进实例时核对）。实例的「补全 Google Play 商店」按钮按它决定是直接装，还是先引导去补全组件。
   - `source`：`download`（补全组件时下载的）、`import`（用自己的文件导入的），没有或来历不明是 `""`。
   - `files` 固定五项，顺序同文档站：`Phonesky.apk`、`PrebuiltGmsCore.apk`、`GoogleServicesFramework.apk`、`PartnerSetupPrebuilt.apk`、`play_store_fsi_cert.der`；`guest` 是装进实例后的路径，`present` 是这个文件在、大小对。

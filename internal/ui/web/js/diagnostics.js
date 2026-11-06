@@ -71,6 +71,11 @@ const MAX_IMPORT = 8; // the server's limit: the five files and the zip, with ro
 let upload = null; // {n, bytes} while an import's files are being handed to the server
 
 export const storeStatus = () => (S.components && S.components.play_store) || null;
+const storeArchive = () => (storeStatus() || {}).archive || 'x86_64-34_r14.zip';
+const storeDownload = () => `${(((storeStatus() || {}).download_bytes || 1510752654) / 1e9).toFixed(1)} GB`;
+const storeInstallNote = () => (storeStatus() || {}).install_supported === false
+  ? '当前平台尚未开放实例内安装与移除。'
+  : '新建的实例不带商店，要用的实例在「更多操作」里补全。';
 
 function storeReadyText(st) {
   const bits = [STORE_FROM[st.source], st.version && `r${st.version}`].filter(Boolean);
@@ -85,7 +90,7 @@ export async function importPlayStore(files) {
   files = [...files];
   if (!files.length) return null;
   if (activeJob('components') || activeJob('playstore-import') || upload) throw refusal('组件正在补全或导入', '等它做完再导入');
-  if (files.length > MAX_IMPORT) throw refusal(`一次最多选 ${MAX_IMPORT} 个文件`, '只要 Google Play 版镜像的压缩包 x86_64-34_r14.zip，或者商店的五个文件');
+  if (files.length > MAX_IMPORT) throw refusal(`一次最多选 ${MAX_IMPORT} 个文件`, `只要 Google Play 版镜像的压缩包 ${storeArchive()}，或者商店的五个文件`);
   const empty = files.find((f) => !f.size);
   if (empty) throw refusal(`${empty.name} 是空文件`, '换成 Google Play 版镜像的压缩包，或者商店的五个文件');
   const fd = new FormData();
@@ -123,8 +128,8 @@ export function storeBox(mode, checked) {
   if (mode === 'fetch') {
     b.box = h('input', { type: 'checkbox', id: 'lic-store', checked: !!checked, 'aria-describedby': 'lic-store-h' });
     b.choose = h('div', { class: 'store-choose' },
-      h('label', { class: 'checkbox' }, b.box, h('span', { text: '同时补全 Google Play 商店服务（约 1.5 GB，可选）' })),
-      h('p', { class: 'f-hint', id: 'lic-store-h', text: '勾上就一起从 Google 官方下载 Google Play 版系统镜像（同样受这份协议约束），只留商店的五个文件；新建的实例不带商店，要用的实例在「更多操作」里补全。已经有镜像压缩包 x86_64-34_r14.zip 或那五个文件的，直接导入，不用下载：' }),
+      h('label', { class: 'checkbox' }, b.box, b.label = h('span')),
+      b.note = h('p', { class: 'f-hint', id: 'lic-store-h' }),
       h('div', { class: 'store-own' }, b.own));
     b.el = h('div', { class: 'store-opt' }, b.choose, b.state, b.running, b.err, b.input);
   } else {
@@ -133,7 +138,7 @@ export function storeBox(mode, checked) {
     b.choose = h('div', { class: 'diag-actions' }, b.get, b.own);
     b.el = h('section', { class: 'store-box', 'aria-labelledby': 'store-box-t', tabindex: '-1' },
       h('div', { class: 'store-head' }, h('strong', { id: 'store-box-t', text: 'Google Play 商店服务' }), h('span', { class: 'tag', text: '可选' }), h('span', { class: 'spacer' }), b.pill),
-      h('p', { class: 'store-note', text: '给实例补全 Google Play 商店要用。从 Google 官方下载 Google Play 版系统镜像（约 1.5 GB），只留商店的五个文件；或者用自己的镜像压缩包 x86_64-34_r14.zip、那五个文件导入。新建的实例不带商店。' }),
+      b.note = h('p', { class: 'store-note' }),
       b.state, b.running, b.err, b.choose, b.input);
   }
   b.wanted = () => mode === 'fetch' && !!b.box.checked && !b.box.disabled && !(storeStatus() || {}).ready;
@@ -150,6 +155,8 @@ export function fillStoreBox(b) {
   const last = imp ? null : latestJob('playstore-import');
   const failed = b.local || (last && last.state === 'failed' ? last.error || {} : null);
   b.choose.hidden = ready;
+  if (b.label) setText(b.label, `同时补全 Google Play 商店服务（约 ${storeDownload()}，可选）`);
+  setText(b.note, `从 Google 官方下载 Google Play 版系统镜像（约 ${storeDownload()}），同样受许可协议约束，只保留商店的五个文件；也可导入 ${storeArchive()} 或五个文件。${storeInstallNote()}`);
   if (b.mode === 'check') {
     setText(b.pill, ready ? '已就绪' : st ? '没有' : '未知');
     b.pill.className = 'pill tone-' + (ready ? 'ok' : 'idle');
@@ -159,7 +166,7 @@ export function fillStoreBox(b) {
     attr(b.own, 'aria-disabled', run || upload ? true : null);
   }
   b.state.hidden = !ready;
-  if (ready) setText(b.state, `${storeReadyText(st)}。要用的实例在「更多操作」里补全商店。`);
+  if (ready) setText(b.state, `${storeReadyText(st)}。${storeInstallNote()}`);
   b.running.hidden = !(run || upload);
   b.cancel.hidden = !run;
   if (run) {

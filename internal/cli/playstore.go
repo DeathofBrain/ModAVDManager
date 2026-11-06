@@ -3,11 +3,14 @@ package cli
 import (
 	"fmt"
 	"io"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"modavd/internal/components"
 	"modavd/internal/errs"
+	"modavd/internal/playstore"
 )
 
 // importPlayStore is components.ImportPlayStore (a variable for the tests).
@@ -28,7 +31,7 @@ func runImportPlayStore(c *cmdCtx) (any, error) {
 	}
 	paths := c.inv.pos[1:]
 	if len(paths) == 0 {
-		return nil, errs.New(errs.Usage, "components import-playstore 要给文件或文件夹：Google Play 版镜像的压缩包 x86_64-34_r14.zip，或者商店的五个文件").
+		return nil, errs.New(errs.Usage, "components import-playstore 要给文件或文件夹：Google Play 版镜像的压缩包 "+filepath.Base(playstore.CurrentProfile().ImageURL)+"，或者商店的五个文件").
 			WithAdvice(findCommand("components").usageAdvice())
 	}
 	files, err := components.PlayStoreImportFiles(paths)
@@ -92,5 +95,16 @@ func formatImportPlayStore(w io.Writer, r *components.PlayStoreImportResult) {
 	if r.SetAside != "" {
 		fmt.Fprintf(w, "  原来不完整的目录改名为 %s，确认没用后可以自己删掉\n", r.SetAside)
 	}
-	fmt.Fprintln(w, "给实例装上：modavd playstore <实例编号> install")
+	if runtime.GOOS == "darwin" {
+		fmt.Fprintln(w, "ARM64 商店文件已准备；当前 macOS 版本尚未开放实例内安装与移除")
+	} else {
+		fmt.Fprintln(w, "给实例装上：modavd playstore <实例编号> install")
+	}
+}
+
+func playStoreFetchHelp() string {
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		return "也准备可选的 Google Play 商店：下载 API35 ARM64 r9 镜像（约 1.8 GB），校验后只保留五个文件；实例内装卸尚未开放"
+	}
+	return "也补全可选的 Google Play 商店：下 Google Play 版系统镜像（约 1.5 GB），只取出商店等 5 个文件（约 230 MB）"
 }
