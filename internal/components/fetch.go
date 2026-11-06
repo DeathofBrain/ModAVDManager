@@ -1,5 +1,5 @@
 // Package components is `modavd components fetch`: it downloads and installs the Google components a ModAVD release
-// leaves out on purpose (adb and the Android 14 system image, root.SDKComponents), the way the package's
+// leaves out on purpose (adb and the platform's system image, root.SDKComponents), the way the package's
 // fetch-components.ps1 did, rule for rule. The Android SDK license from the mirror's repository2-3.xml is shown and
 // has to be accepted first. Mirrors are tried in order (googledownloads.cn, Tencent, dl.google.com). Zips download
 // into downloads\*.part, resume after an interruption, and are checked for size and SHA-1 before the rename; they
@@ -267,7 +267,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		lock.Unlock()
 		f.note(fmt.Sprintf("退出码 %d", errs.ExitCode(err)))
 	}()
-	f.say("魔改 AVD：补全 Google 组件（adb、Android 14 系统镜像）")
+	androidVersion := "14"
+	if f.darwin() {
+		androidVersion = "15"
+	}
+	f.say("魔改 AVD：补全 Google 组件（adb、Android " + androidVersion + " 系统镜像）")
 	f.say("文件夹：" + r.Dir)
 	free := "-1"
 	if f.o.TestFreeSpaceMB != nil {

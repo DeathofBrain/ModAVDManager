@@ -117,7 +117,7 @@ func SDKComponents() []SDKComponent {
 
 // DarwinComponents pins the official stable archives used by the Apple Silicon
 // package. SHA-1 and license identities come from Google's repository XML;
-// SHA-256 pins also match the separately verified macOS maintenance lock file.
+// SHA-256 pins also bind the bytes of the independently verified archives.
 func DarwinComponents() []SDKComponent {
 	p := CurrentPlatform()
 	return []SDKComponent{
@@ -139,16 +139,16 @@ func DarwinComponents() []SDKComponent {
 		},
 		{
 			ID: "system-image", Name: p.SystemImageName,
-			FetchName: "系统镜像（Android 14 Google APIs arm64-v8a）", Version: "14",
+			FetchName: "系统镜像（Android 15 Google APIs arm64-v8a）", Version: "9",
 			Target: p.SystemImageDir, StatusFiles: systemImageFiles(),
-			URL: "sys-img/google_apis/arm64-v8a-34_r14.zip", Size: 1610393229,
-			SHA1:        "2fe8b46d419a3400e30f31b0152b241b50c8b99f",
-			SHA256:      "bd1c323cbdd3c9dd55dde54588b298d172fd126fe16e127a7bd7aeab6897890a",
+			URL: "sys-img/google_apis/arm64-v8a-35_r09.zip", Size: 1778933980,
+			SHA1:        "16f5bceca236b2737008977c4aaf826e46a8de7d",
+			SHA256:      "d2e7c6076e5df54d3677605a324daf9edf813b2808c216bdb1687f6b2b6aed99",
 			ArchiveRoot: "arm64-v8a", KeyFiles: systemImageFiles(), ExtractedBytes: 6000000000,
 			StrictRevision:     true,
-			RequiredProperties: map[string]string{"SystemImage.Abi": p.GuestABI, "AndroidVersion.ApiLevel": "34", "SystemImage.TagId": "google_apis"},
-			Properties: "Pkg.Desc=System Image arm64-v8a with Google APIs.\nPkg.Revision=14\nPkg.Dependencies=emulator#34.2.16\n" +
-				"AndroidVersion.ApiLevel=34\nAndroidVersion.ExtensionLevel=7\nAndroidVersion.IsBaseSdk=true\n" +
+			RequiredProperties: map[string]string{"SystemImage.Abi": p.GuestABI, "AndroidVersion.ApiLevel": "35", "SystemImage.TagId": "google_apis"},
+			Properties: "Pkg.Desc=System Image arm64-v8a with Google APIs.\nPkg.Revision=9\nPkg.Dependencies=emulator#33.1.24\n" +
+				"AndroidVersion.ApiLevel=35\nAndroidVersion.ExtensionLevel=13\nAndroidVersion.IsBaseSdk=true\n" +
 				"SystemImage.Abi=arm64-v8a\nSystemImage.TagId=google_apis\nSystemImage.TagDisplay=Google APIs\n" +
 				"SystemImage.GpuSupport=true\nAddon.VendorId=google\nAddon.VendorDisplay=Google Inc.\n",
 			LicenseID: "android-sdk-arm-dbt-license", LicenseManifest: "sys-img/google_apis/sys-img2-3.xml",
