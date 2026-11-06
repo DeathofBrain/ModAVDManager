@@ -61,6 +61,9 @@ type InstanceInfo struct {
 	// instance that is off or still booting and has the bridge's boot marker after its first boot reads unknown, since
 	// the marker stays while the bridge is installed and also after a failed install.
 	Bridge string `json:"bridge"`
+	// PlayStore: the Google Play Store was put in (mas-avd.json instances.<i>.playStore, set by `playstore <i>
+	// install`, cleared by uninstall; playstore.go). Read from that record only; `playstore <i> status` asks the guest.
+	PlayStore bool `json:"play_store"`
 	// Creation is "creating" while create sets the instance up (its headless first boot), "failed" when that stopped
 	// (CreationError says why, CreationLog is that boot's log); "" for a ready instance. See crud.go.
 	Creation      string `json:"creation"`

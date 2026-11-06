@@ -39,7 +39,7 @@ func (f *fakeDiag) Components(context.Context) (*DiagComponentsResult, error) {
 func (f *fakeDiag) License(context.Context, components.SourceSettings) (*DiagLicenseResult, error) {
 	return &DiagLicenseResult{Text: fakeTerms, Source: "mirror", SHA256: fakeTermsSHA}, nil
 }
-func (f *fakeDiag) Fetch(ctx context.Context, accept bool, _ components.SourceSettings, _ string, progress func(DiagProgress)) (*DiagFetchResult, error) {
+func (f *fakeDiag) Fetch(ctx context.Context, accept, _ bool, _ components.SourceSettings, _ string, progress func(DiagProgress)) (*DiagFetchResult, error) {
 	if !accept {
 		return nil, errs.New(errs.Usage, "必须同意")
 	}

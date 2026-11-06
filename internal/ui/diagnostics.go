@@ -19,6 +19,9 @@ type DiagComponent struct {
 type DiagComponentsResult struct {
 	Root       string          `json:"root"`
 	Components []DiagComponent `json:"components"`
+	// PlayStore is the optional Google Play Store's five files in detail (Components ends with its summary item,
+	// id play-store).
+	PlayStore components.PlayStoreStatus `json:"play_store"`
 }
 
 type DiagLicenseResult struct {
@@ -85,7 +88,10 @@ type DiagCollectResult struct {
 type diagBackend interface {
 	Components(context.Context) (*DiagComponentsResult, error)
 	License(context.Context, components.SourceSettings) (*DiagLicenseResult, error)
-	Fetch(context.Context, bool, components.SourceSettings, string, func(DiagProgress)) (*DiagFetchResult, error)
+	// Fetch: accept, then playStore (also the optional Google Play Store, components.Options.PlayStore)
+	Fetch(context.Context, bool, bool, components.SourceSettings, string, func(DiagProgress)) (*DiagFetchResult, error)
 	Collect(context.Context, DiagCollectOptions, func(DiagProgress)) (*DiagCollectResult, error)
 	ReportConfig(context.Context) (string, error)
+	// ImportPlayStore is components.ImportPlayStore on the root (the files the page uploaded).
+	ImportPlayStore(context.Context, []components.ImportFile, func(DiagProgress)) (*components.PlayStoreImportResult, error)
 }

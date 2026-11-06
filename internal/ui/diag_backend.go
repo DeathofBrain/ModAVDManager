@@ -20,6 +20,7 @@ var (
 	diagComponents = func(r *root.Root) []emu.ComponentStatus { return emu.ComponentStatuses(r.Components()) }
 	diagLicense    = components.License
 	diagFetch      = components.Fetch
+	diagImport     = components.ImportPlayStore
 	diagCollect    = report.Collect
 	diagConfig     = report.BuildConfig
 )
@@ -35,7 +36,9 @@ func (b *realDiagBackend) Components(ctx context.Context) (*DiagComponentsResult
 	if err := ctx.Err(); err != nil {
 		return nil, errs.Wrap(errs.Canceled, err, "已取消")
 	}
-	return &DiagComponentsResult{Root: b.r.Dir, Components: toDiagComponents(diagComponents(b.r))}, nil
+	store := components.PlayStoreState(b.r)
+	return &DiagComponentsResult{Root: b.r.Dir, Components: append(toDiagComponents(diagComponents(b.r)), playStoreComponent(store)),
+		PlayStore: store}, nil
 }
 
 func (b *realDiagBackend) License(ctx context.Context, source components.SourceSettings) (*DiagLicenseResult, error) {
@@ -46,7 +49,7 @@ func (b *realDiagBackend) License(ctx context.Context, source components.SourceS
 	return &DiagLicenseResult{Text: text, Source: from, SHA256: components.LicenseSHA256(text)}, nil
 }
 
-func (b *realDiagBackend) Fetch(ctx context.Context, accept bool, source components.SourceSettings, licenseSHA256 string, progress func(DiagProgress)) (*DiagFetchResult, error) {
+func (b *realDiagBackend) Fetch(ctx context.Context, accept, playStore bool, source components.SourceSettings, licenseSHA256 string, progress func(DiagProgress)) (*DiagFetchResult, error) {
 	if !accept {
 		return nil, errs.New(errs.LicenseDeclined, "没有同意许可协议，已退出，什么也没有下载")
 	}
@@ -56,6 +59,7 @@ func (b *realDiagBackend) Fetch(ctx context.Context, accept bool, source compone
 		Mirror:        source.Mirror,
 		MirrorURLs:    append([]string(nil), source.MirrorURLs...),
 		LicenseSHA256: licenseSHA256,
+		PlayStore:     playStore,
 		SourceOrigin:  components.SourceFromManager,
 		Log:           b.log,
 		// the license text and the note under it: the user has just read them in the dialog, so they go to the
@@ -72,6 +76,14 @@ func (b *realDiagBackend) Fetch(ctx context.Context, accept bool, source compone
 	}
 	return &DiagFetchResult{Root: res.Root, License: res.License, LicenseSource: res.LicenseSource,
 		Components: toDiagFetchComponents(res.Components), Downloads: res.Downloads}, nil
+}
+
+func (b *realDiagBackend) ImportPlayStore(ctx context.Context, files []components.ImportFile, progress func(DiagProgress)) (*components.PlayStoreImportResult, error) {
+	return diagImport(ctx, b.r, files, components.Options{Log: b.log, Progress: func(p components.Progress) {
+		if progress != nil {
+			progress(diagProgressFromComponent(p))
+		}
+	}})
 }
 
 func (b *realDiagBackend) Collect(ctx context.Context, opt DiagCollectOptions, progress func(DiagProgress)) (*DiagCollectResult, error) {
@@ -97,6 +109,16 @@ func (b *realDiagBackend) ReportConfig(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return res.Text, nil
+}
+
+// playStoreComponent is the optional Google Play Store as the component list shows it: installed when its five files
+// are there (PlayStoreStatus.Ready; the pinned hashes are checked where they are put in and used).
+func playStoreComponent(s components.PlayStoreStatus) DiagComponent {
+	d := DiagComponent{ID: "play-store", Name: root.PlayStoreName, Optional: true, Installed: s.Ready}
+	if s.Ready {
+		d.Version = s.Version
+	}
+	return d
 }
 
 func toDiagComponents(in []emu.ComponentStatus) []DiagComponent {

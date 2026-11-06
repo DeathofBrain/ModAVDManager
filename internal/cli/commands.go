@@ -85,8 +85,10 @@ var (
 	optAcceptLicense = flagSpec{"accept-license", kindBool, "",
 		"不询问，直接视为同意《Android 软件开发套件许可协议》（自动化用；协议全文照样取回并打印，取不到照样退出）；--json 时必须给"}
 	optKeepDownloads = flagSpec{"keep-downloads", kindBool, "", "装好后保留 downloads 里的 zip（默认装好即删，省 1.5 GB）"}
-	optMirror        = flagSpec{"mirror", kindString, "ID", "只用一个内置镜像：googledownloads_cn / tencent / google"}
-	optMirrorURL     = flagSpec{"mirror-url", kindStrings, "URL",
+	optFetchStore    = flagSpec{"play-store", kindBool, "",
+		"也补全可选的 Google Play 商店：下 Google Play 版系统镜像（约 1.5 GB），只取出商店等 5 个文件（约 230 MB）"}
+	optMirror    = flagSpec{"mirror", kindString, "ID", "只用一个内置镜像：googledownloads_cn / tencent / google"}
+	optMirrorURL = flagSpec{"mirror-url", kindStrings, "URL",
 		"自建或测试用：用这个目录地址代替内置的三个镜像，可写多次或用逗号隔开，按顺序试；给了就不看 --mirror"}
 	optConnectTO = flagSpec{"connect-timeout", kindInt, "秒",
 		"等服务器回应（连接、TLS 握手、返回响应头）的上限，1–600，默认 20，超时换下一个镜像"}
@@ -102,8 +104,8 @@ var (
 )
 
 // fetchFlags are the options only components fetch takes.
-var fetchFlags = []flagSpec{optAcceptLicense, optKeepDownloads, optMirror, optMirrorURL, optConnectTO, optStallTO,
-	optManifestTO, optTestFreeSpace}
+var fetchFlags = []flagSpec{optAcceptLicense, optKeepDownloads, optFetchStore, optMirror, optMirrorURL, optConnectTO,
+	optStallTO, optManifestTO, optTestFreeSpace}
 
 var commands []*command
 
@@ -135,7 +137,7 @@ func init() {
 			details: "不给的选项用默认值：内存 6 GB、6 核、数据盘 64 GB、60 帧、1080p（1920×1080 / DPI 280）。内存和核数只能取列出的档位，不会自动凑整。" +
 				"建好文件后在后台无头开机一次，做完开机设置、宿主输入法、首次初始化和 arm64 执行桥（只对内置名单里的游戏生效，" +
 				"其余应用照旧；--no-bridge 不装，以后也不装），再先 sync 后正常关机，一般要几分钟，进度逐步打印（「新建中 35%」，按做完的步骤算）；" +
-				"之后第一次开机和平常一样快。" +
+				"之后第一次开机和平常一样快。新建的实例不带 Google Play 商店，要的话建好后用 playstore <i> install 补全。" +
 				"这期间实例的状态是 creating（status、list 里 creation_progress 是百分比），不能开机、修改或删除；失败（或被打断）是 create_failed，" +
 				"用 create --resume N 重做初始化，或者 delete N --yes 删掉。",
 			flags: []flagSpec{optIndex, optTitle, optMemory, optCPU, optDataGB, optFPS, optResolution, optNoBridge, optCreateTimeout, optResume},
@@ -212,18 +214,26 @@ func init() {
 			run: runCollectInfo, human: humanCollectInfo,
 		},
 		{
-			name: "components", args: "[status] | source [auto|googledownloads_cn|tencent|google] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]",
-			summary: "查看或补全 Google 组件（adb 和系统镜像）",
+			name: "components", args: "[status] | source [auto|googledownloads_cn|tencent|google] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads] [--play-store] | import-playstore <文件或文件夹>…",
+			summary: "查看或补全 Google 组件（adb 和系统镜像，可选的 Google Play 商店）",
 			details: "status（默认）查看组件，和 check 里的组件一样。fetch 补全缺少的组件：" +
 				"先从镜像取《Android 软件开发套件许可协议》全文并显示，输入 y 同意才继续，否则什么也不下；" +
 				"再依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载缺少的 adb 和系统镜像（约 1.5 GB，中断了再运行会接着下），" +
 				"校验后装进 sdk\\。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
+				"--play-store 再补全可选的 Google Play 商店（playstore <i> install 要用；已经有了就跳过）：下 Google Play 版系统镜像，" +
+				"从里面的 system.img 只取出商店、Play 服务、GSF、合作伙伴设置和商店的证书这五个文件，核对 SHA-256 后放进 sdk\\playstore，" +
+				"解出的镜像和下载的压缩包随即删掉，只留这五个文件。" +
+				"import-playstore 用自己的文件补全它，不下载、不问许可协议：给 Google 官方的 Google Play 版镜像压缩包（x86_64-34_r14.zip，名字不限，" +
+				"按 Google 仓库清单核对大小和 SHA-1），或者那五个文件本身（名字不限，逐个核对大小和 SHA-256；给文件夹就取里面同名的几个）；" +
+				"认不出或对不上的一律拒收，什么也不改；只读你的文件，不动它们。" +
+				"status 列出这五个文件在不在、从哪来（download / import），不把它算进必需组件。" +
 				"不带参数时默认查看组件；source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）。" +
 				"--json 时必须给 --accept-license（仅 fetch）。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
 				"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
-				"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验也是 9（components_rejected）。",
+				"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验、导入的文件被拒收也是 9（components_rejected，" +
+				"--json 的 error.details.reason 是 unknown_file、mismatch 或 incomplete）。",
 			flags:    fetchFlags,
-			posNames: []string{"status、source 或 fetch", "下载源"}, maxPos: 2,
+			posNames: []string{"status、source、fetch 或 import-playstore", "下载源或要导入的文件"}, maxPos: -1,
 			final: true,
 			run:   runComponents, human: formatComponents,
 		},
@@ -244,6 +254,18 @@ func init() {
 			posNames: []string{"实例编号", "install、uninstall 或 verify"}, minPos: 2, maxPos: 2,
 			final: true,
 			run:   runBridge, human: humanOf(formatBridge), exit: exitBridge,
+		},
+		{
+			name: "playstore", args: "<i> install|uninstall|status", summary: "装、卸、查看 Google Play 商店",
+			details: "商店的五个文件取自 Google 官方的 Google Play 版系统镜像（和实例的镜像同一期），要先在根目录补全：" +
+				"components fetch --play-store（下载）或 components import-playstore（用自己的文件）；没有就报 not_ready（details.reason 为 playstore_files_missing）。" +
+				"装在执行桥带来的可写系统镜像覆盖层里，所以实例要有执行桥。install 放入商店和 Google 签名的 Play 服务、GSF、合作伙伴设置，" +
+				"藏起镜像自带的同名占位应用，再冷启动一次生效；uninstall 去掉 Google Play 装的更新、删掉这些文件，冷启动后恢复占位应用。" +
+				"实例原来关着的，做完再关掉；开着的，冷启动后照原来的方式开回来（带窗口或无头）。status：只读，实例要开着。" +
+				"没有执行桥的报 not_ready（details.reason 为 no_bridge）。装了商店的实例不能卸执行桥，要先卸商店。新建的实例都不带商店。",
+			posNames: []string{"实例编号", "install、uninstall 或 status"}, minPos: 2, maxPos: 2,
+			final: true,
+			run:   runPlayStore, human: humanOf(formatPlayStore), exit: exitPlayStore,
 		},
 		{
 			name: "disk", args: "<i> trim|info|compact", summary: "磁盘回收：触发回收或整理把客体已删文件占的空间还给宿主；看数据盘大小",
@@ -441,6 +463,8 @@ type HelpResult struct {
 type ComponentsStatusResult struct {
 	Root       string                `json:"root"`
 	Components []emu.ComponentStatus `json:"components"`
+	// PlayStore is the optional Google Play Store's five files (not one of Components: never counted as missing).
+	PlayStore components.PlayStoreStatus `json:"play_store"`
 }
 
 // ComponentsSourceResult is `components source`: the saved per-user choice.
@@ -892,8 +916,11 @@ func runComponents(c *cmdCtx) (any, error) {
 	if len(c.inv.pos) > 0 {
 		action = strings.ToLower(c.inv.pos[0])
 	}
-	if action != "fetch" && action != "status" && action != "source" {
-		return nil, errs.Newf(errs.Usage, "只能是 status、source 或 fetch，收到「%s」", c.inv.pos[0]).WithAdvice(findCommand("components").usageAdvice())
+	if action != "fetch" && action != "status" && action != "source" && action != "import-playstore" {
+		return nil, errs.Newf(errs.Usage, "只能是 status、source、fetch 或 import-playstore，收到「%s」", c.inv.pos[0]).WithAdvice(findCommand("components").usageAdvice())
+	}
+	if action == "import-playstore" {
+		return runImportPlayStore(c)
 	}
 	if action == "source" {
 		for _, f := range fetchFlags {
@@ -941,7 +968,8 @@ func runComponents(c *cmdCtx) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ComponentsStatusResult{Root: r.Dir, Components: emu.ComponentStatuses(r.Components())}, nil
+		return &ComponentsStatusResult{Root: r.Dir, Components: emu.ComponentStatuses(r.Components()),
+			PlayStore: components.PlayStoreState(r)}, nil
 	}
 	var (
 		r   *root.Root
@@ -1002,7 +1030,8 @@ func fetchOptions(c *cmdCtx) (components.Options, error) {
 	o := components.Options{
 		AcceptLicense: inv.boolOpt("accept-license"), JSON: inv.json, Input: input,
 		KeepDownloads: inv.boolOpt("keep-downloads"), Mirror: inv.strOpt("mirror"), MirrorURLs: inv.strsOpt("mirror-url"),
-		Log: c.log,
+		PlayStore: inv.boolOpt("play-store"),
+		Log:       c.log,
 	}
 	// --mirror / --mirror-url win. Otherwise the saved per-user source; with none saved, someone at a console is
 	// asked once (and the answer saved), while --accept-license (automation), --json and a stdin that is not a
@@ -1144,6 +1173,38 @@ func runBridge(c *cmdCtx) (any, error) {
 		return nil, err
 	}
 	return m.Bridge(c.ctx, i, action)
+}
+
+func runPlayStore(c *cmdCtx) (any, error) {
+	i, err := parseIndex(c.inv.pos[0])
+	if err != nil {
+		return nil, err
+	}
+	action := strings.ToLower(c.inv.pos[1])
+	switch action {
+	case "install", "uninstall", "status":
+	default:
+		return nil, errs.Newf(errs.Usage, "第二个参数只能是 install、uninstall 或 status，收到「%s」", c.inv.pos[1]).
+			WithAdvice(findCommand("playstore").usageAdvice())
+	}
+	m, err := c.mgr()
+	if err != nil {
+		return nil, err
+	}
+	return m.PlayStore(c.ctx, i, action)
+}
+
+// exitPlayStore: 1 when the store did not end up as asked (installed after install, absent after uninstall). status
+// and --json: 0, the result says it.
+func exitPlayStore(data any, json bool) int {
+	r, ok := data.(*emu.PlayStoreResult)
+	if json || !ok {
+		return 0
+	}
+	if r.Action == "install" && !r.Installed || r.Action == "uninstall" && r.State != "absent" {
+		return 1
+	}
+	return 0
 }
 
 // runDisk dispatches `disk <i> <action>` (trim, info, compact); add a case per new action.

@@ -20,7 +20,7 @@ func TestRealDiagBackendRejectsDeclinedLicense(t *testing.T) {
 		return &components.Result{}, nil
 	}
 	b := newRealDiagBackend(&root.Root{Dir: `C:\root`}, logx.Nop())
-	if _, err := b.Fetch(context.Background(), false, components.SourceSettings{}, fakeHash, nil); err == nil || calls != 0 {
+	if _, err := b.Fetch(context.Background(), false, false, components.SourceSettings{}, fakeHash, nil); err == nil || calls != 0 {
 		t.Fatalf("declined license: err=%v calls=%d", err, calls)
 	}
 }
@@ -46,7 +46,7 @@ func TestRealDiagBackendPassesSourceAndLicenseHash(t *testing.T) {
 		{Mirror: "google", Set: true},
 		{MirrorURLs: []string{"https://a.example/x/", "https://b.example/y/"}, Set: true},
 	} {
-		if _, err := b.Fetch(context.Background(), true, s, fakeHash, nil); err != nil {
+		if _, err := b.Fetch(context.Background(), true, false, s, fakeHash, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
