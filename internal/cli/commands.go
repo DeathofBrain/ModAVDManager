@@ -109,6 +109,24 @@ var commands []*command
 
 // The table is built in init: help's run function refers to it.
 func init() {
+	componentDetails := "status（默认）查看组件，和 check 里的组件一样。fetch 补全缺少的组件：" +
+		"先从镜像取《Android 软件开发套件许可协议》全文并显示，输入 y 同意才继续，否则什么也不下；" +
+		"再依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载缺少的 adb 和系统镜像（约 1.5 GB，中断了再运行会接着下），" +
+		"校验后装进 sdk\\。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
+		"不带参数时默认查看组件；source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）。" +
+		"--json 时必须给 --accept-license（仅 fetch）。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
+		"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
+		"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验也是 9（components_rejected）。"
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		componentDetails = "status（默认）查看组件，和 check 里的组件一样。fetch 补全缺少的 adb 和 Android 15 Google APIs ARM64 系统镜像：" +
+			"先从镜像取待下载组件的 Google 许可协议全文，逐份输入 y 同意才继续，否则不下载归档。" +
+			"默认依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载约 1.8 GB，中断后再次运行会接着下；" +
+			"校验归档、版本和平台后装进 sdk/，保留执行权限。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
+			"SDK 使用中会拒绝补全，请先自行关闭使用它的进程。组件补全后，当前 macOS 版本仍未开放实例创建与启动。" +
+			"source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）；--mirror 或 --mirror-url 可覆盖本次选择。" +
+			"--json 时必须给 --accept-license（仅 fetch），表示已同意待下载组件的全部许可协议。" +
+			"退出码：未同意许可是 2（license_declined），未就绪或预检失败是 4，SDK 使用中或正在补全是 5，下载不可用或校验失败是 9。"
+	}
 	commands = []*command{
 		{
 			name: "list", summary: "列出全部实例和状态",
@@ -213,15 +231,8 @@ func init() {
 		},
 		{
 			name: "components", args: "[status] | source [auto|googledownloads_cn|tencent|google] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]",
-			summary: "查看或补全 Google 组件（adb 和系统镜像）",
-			details: "status（默认）查看组件，和 check 里的组件一样。fetch 补全缺少的组件：" +
-				"先从镜像取《Android 软件开发套件许可协议》全文并显示，输入 y 同意才继续，否则什么也不下；" +
-				"再依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载缺少的 adb 和系统镜像（约 1.5 GB，中断了再运行会接着下），" +
-				"校验后装进 sdk\\。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
-				"不带参数时默认查看组件；source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）。" +
-				"--json 时必须给 --accept-license（仅 fetch）。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
-				"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
-				"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验也是 9（components_rejected）。",
+			summary:  "查看或补全 Google 组件（adb 和系统镜像）",
+			details:  componentDetails,
 			flags:    fetchFlags,
 			posNames: []string{"status、source 或 fetch", "下载源"}, maxPos: 2,
 			final: true,

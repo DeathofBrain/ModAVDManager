@@ -57,10 +57,11 @@ var (
 // License returns the Android SDK license text and the mirror it came from, read from the mirrors of source the
 // way a fetch with that source reads it (an empty source is the default order). It only reads the repository
 // manifest; it does not touch a ModAVD root or install any component. The manager shows this text and passes its
-// SHA-256 as Options.LicenseSHA256 to the fetch the user agreed to.
+// SHA-256 as Options.LicenseSHA256 to the fetch the user agreed to. On macOS the
+// text includes both catalogue licenses, in the same order on every call.
 func License(ctx context.Context, source SourceSettings) (text, from string, err error) {
-	if fetchGOOS != "windows" {
-		return "", "", errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前只有 Windows 能补全组件")
+	if fetchGOOS != "windows" && !(fetchGOOS == "darwin" && nativeDarwinComponents) {
+		return "", "", errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前支持 Windows 和 Apple Silicon macOS")
 	}
 	o := Options{}
 	if err := o.CheckTimeouts(); err != nil {
@@ -72,6 +73,14 @@ func License(ctx context.Context, source SourceSettings) (text, from string, err
 		return "", "", err
 	}
 	f := &fetcher{o: o, mirrors: mirrors}
+	if f.darwin() {
+		licenses, err := f.componentLicenses(ctx, componentCatalogue())
+		if err != nil {
+			return "", "", err
+		}
+		text, from = licenseBundle(licenses)
+		return text, from, nil
+	}
 	return f.license(ctx)
 }
 
@@ -433,7 +442,7 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 	}
 	if len(todo) == 0 {
 		if f.darwin() {
-			f.say("组件都已齐全，不需要下载。可以打开管理器创建或启动实例了。")
+			f.say("组件都已齐全，不需要下载。当前 macOS 版本暂未开放实例创建与启动。")
 		} else {
 			f.say("组件都已齐全，不需要下载。完成，可以在 AUTO-MAS 里添加这个文件夹了。")
 		}
@@ -504,7 +513,7 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 		}
 	}
 	if f.darwin() {
-		f.say("完成，可以打开管理器创建或启动实例了。")
+		f.say("组件补全完成。当前 macOS 版本暂未开放实例创建与启动。")
 	} else {
 		f.say("完成，可以在 AUTO-MAS 里添加这个文件夹了。")
 	}
@@ -662,6 +671,10 @@ func (f *fetcher) consentLicense(text, from string, todo []root.SDKComponent, id
 
 func (f *fetcher) darwin() bool { return fetchGOOS == "darwin" && nativeDarwinComponents }
 
+type componentLicense struct {
+	id, text, from string
+}
+
 // Retrieve all required texts before asking questions or downloading archives.
 // The explicit --accept-license flag applies to every displayed component term.
 func (f *fetcher) acceptLicenses(ctx context.Context, todo []root.SDKComponent, res *Result) error {
@@ -671,29 +684,63 @@ func (f *fetcher) acceptLicenses(ctx context.Context, todo []root.SDKComponent, 
 		if err != nil {
 			return err
 		}
-		if want := strings.TrimSpace(f.o.LicenseSHA256); want != "" {
-			if got := LicenseSHA256(text); !strings.EqualFold(want, got) {
-				f.note("管理器里同意的许可协议 SHA-256 " + want + "，这次取到的是 " + got)
-				return errs.New(errs.ComponentsRejected, "下载源这次给的许可协议和你在管理器里同意的那份不一样，什么也没有下载").
-					WithAdvice("请重新点「补全组件」，看过新的许可协议后再决定")
-			}
+		if err := f.checkAgreedLicense(text); err != nil {
+			return err
 		}
 		res.License, res.LicenseSource = text, from
 		return f.consent(text, from, todo)
 	}
-	type terms struct {
-		id, text, from string
-		components     []root.SDKComponent
+	specs := todo
+	if strings.TrimSpace(f.o.LicenseSHA256) != "" {
+		// The manager reads the whole catalogue before it knows which files
+		// remain complete. Verify the same bundle even when only one is missing.
+		specs = componentCatalogue()
 	}
-	var licenses []terms
-	for _, c := range todo {
+	licenses, err := f.componentLicenses(ctx, specs)
+	if err != nil {
+		return err
+	}
+	text, from := licenseBundle(licenses)
+	if err := f.checkAgreedLicense(text); err != nil {
+		return err
+	}
+	for _, l := range licenses {
+		var needed []root.SDKComponent
+		for _, c := range todo {
+			if c.LicenseID == l.id {
+				needed = append(needed, c)
+			}
+		}
+		if len(needed) != 0 {
+			if err := f.consentLicense(l.text, l.from, needed, l.id); err != nil {
+				return err
+			}
+		}
+	}
+	res.License, res.LicenseSource = text, from
+	return nil
+}
+
+func (f *fetcher) checkAgreedLicense(text string) error {
+	if want := strings.TrimSpace(f.o.LicenseSHA256); want != "" {
+		if got := LicenseSHA256(text); !strings.EqualFold(want, got) {
+			f.note("管理器里同意的许可协议 SHA-256 " + want + "，这次取到的是 " + got)
+			return errs.New(errs.ComponentsRejected, "下载源这次给的许可协议和你在管理器里同意的那份不一样，什么也没有下载").
+				WithAdvice("请重新点「补全组件」，看过新的许可协议后再决定")
+		}
+	}
+	return nil
+}
+
+func (f *fetcher) componentLicenses(ctx context.Context, specs []root.SDKComponent) ([]componentLicense, error) {
+	var licenses []componentLicense
+	for _, c := range specs {
 		if c.LicenseID != licenseID && c.LicenseID != "android-sdk-arm-dbt-license" {
-			return rejected("组件 %s 没有受支持的许可标识", c.ID)
+			return nil, rejected("组件 %s 没有受支持的许可标识", c.ID)
 		}
 		found := false
-		for k := range licenses {
-			if licenses[k].id == c.LicenseID {
-				licenses[k].components = append(licenses[k].components, c)
+		for _, l := range licenses {
+			if l.id == c.LicenseID {
 				found = true
 				break
 			}
@@ -703,20 +750,20 @@ func (f *fetcher) acceptLicenses(ctx context.Context, todo []root.SDKComponent, 
 		}
 		text, from, err := f.licenseFor(ctx, c.LicenseManifest, c.LicenseID, c.LicenseSHA256)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		licenses = append(licenses, terms{c.LicenseID, text, from, []root.SDKComponent{c}})
+		licenses = append(licenses, componentLicense{c.LicenseID, text, from})
 	}
+	return licenses, nil
+}
+
+func licenseBundle(licenses []componentLicense) (text, from string) {
 	var texts, sources []string
 	for _, l := range licenses {
 		texts = append(texts, l.id+"\n"+l.text)
 		sources = append(sources, l.id+": "+l.from)
-		if err := f.consentLicense(l.text, l.from, l.components, l.id); err != nil {
-			return err
-		}
 	}
-	res.License, res.LicenseSource = strings.Join(texts, "\n\n"), strings.Join(sources, "; ")
-	return nil
+	return strings.Join(texts, "\n\n"), strings.Join(sources, "; ")
 }
 
 // ---- messages and the log file -----------------------------------------------------------------------------------
