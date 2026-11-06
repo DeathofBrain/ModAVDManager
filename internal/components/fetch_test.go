@@ -13,7 +13,7 @@ import (
 	"modavd/internal/testutil"
 )
 
-// TestFetchUnsupportedPlatform: darwin and linux have no catalogue; the code (not just the text) says so, before
+// TestFetchUnsupportedPlatform: linux has no catalogue; the code (not just the text) says so, before
 // anything is read or written.
 func TestFetchUnsupportedPlatform(t *testing.T) {
 	old := fetchGOOS
@@ -23,7 +23,7 @@ func TestFetchUnsupportedPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, goos := range []string{"darwin", "linux"} {
+	for _, goos := range []string{"linux"} {
 		fetchGOOS = goos
 		_, err := Fetch(context.Background(), r, Options{AcceptLicense: true, MirrorURLs: []string{"http://127.0.0.1:1/"}})
 		if errs.CodeOf(err) != errs.Unsupported || errs.ExitCode(err) != 4 {

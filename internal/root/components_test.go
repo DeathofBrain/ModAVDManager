@@ -92,6 +92,12 @@ func TestSDKComponentsOfHost(t *testing.T) {
 		}
 		return
 	}
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		if c[0].URL == "" || c[0].Size <= 0 {
+			t.Fatal("Apple Silicon macOS has the catalogue")
+		}
+		return
+	}
 	if c[0].URL != "" || c[1].URL != "" || !slices.Equal(c[0].StatusFiles, []string{CurrentPlatform().ADB}) {
 		t.Fatalf("no catalogue here: %+v", c)
 	}

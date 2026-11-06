@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -54,11 +55,15 @@ func (f *fetcher) downloader() *download.Client {
 // license gets the Android SDK license text from the first mirror that serves repository2-3.xml, and moves the
 // mirrors that failed to the end of the list, so a dead one does not cost each component its timeout again.
 func (f *fetcher) license(ctx context.Context) (text, from string, err error) {
+	return f.licenseFor(ctx, licenseManifest, licenseID, "")
+}
+
+func (f *fetcher) licenseFor(ctx context.Context, manifest, id, digest string) (text, from string, err error) {
 	var reasons []string
 	var failed []Mirror
 	for k, m := range f.mirrors {
-		f.where = "从「" + m.Name + "」获取许可协议清单 " + licenseManifest
-		t, err := f.licenseFrom(ctx, m)
+		f.where = "从「" + m.Name + "」获取许可协议清单 " + manifest
+		t, err := f.licenseFromSpec(ctx, m, manifest, id, digest)
 		if err == nil {
 			text, from = t, m.Name
 			break
@@ -74,7 +79,7 @@ func (f *fetcher) license(ctx context.Context) (text, from string, err error) {
 		}
 	}
 	if text == "" {
-		f.where = "获取许可协议清单 " + licenseManifest + "，试过的镜像都不行"
+		f.where = "获取许可协议清单 " + manifest + "，试过的镜像都不行"
 		return "", "", errs.New(errs.ComponentsUnavailable, "取不到《Android SDK 许可协议》全文，什么也没有下载（各镜像的情况："+
 			strings.Join(reasons, "；")+"）").WithAdvice(netAdvice("请检查网络后重试"))
 	}
@@ -106,11 +111,25 @@ func containsMirror(list []Mirror, m Mirror) bool {
 }
 
 func (f *fetcher) licenseFrom(ctx context.Context, m Mirror) (string, error) {
-	body, err := f.getBytes(ctx, m.Base+licenseManifest, "取许可协议清单 "+licenseManifest)
+	return f.licenseFromSpec(ctx, m, licenseManifest, licenseID, "")
+}
+
+func (f *fetcher) licenseFromSpec(ctx context.Context, m Mirror, manifest, id, digest string) (string, error) {
+	body, err := f.getBytes(ctx, m.Base+manifest, "取许可协议清单 "+manifest)
 	if err != nil {
 		return "", err
 	}
-	return licenseText(body, licenseID)
+	text, err := licenseText(body, id)
+	if err != nil {
+		return "", err
+	}
+	if digest != "" {
+		sum := sha256.Sum256([]byte(text + "\n"))
+		if hex.EncodeToString(sum[:]) != digest {
+			return "", fmt.Errorf("许可协议 %s 与固定版本的 SHA-256 不符", id)
+		}
+	}
+	return text, nil
 }
 
 func (f *fetcher) getBytes(ctx context.Context, rawURL, what string) ([]byte, error) {
@@ -177,6 +196,11 @@ func (f *fetcher) zipPath(c root.SDKComponent) string {
 // size and SHA-1 are right. Otherwise each mirror in turn, up to downloadAttempts tries each, into <zip>.part, which is
 // checked for SHA-1 and then renamed. The .part survives a failed try and a change of mirror: the next one resumes it.
 func (f *fetcher) download(ctx context.Context, c root.SDKComponent) (string, error) {
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return "", err
+		}
+	}
 	zipFile := f.zipPath(c)
 	if err := os.MkdirAll(filepath.Dir(zipFile), 0o755); err != nil {
 		return "", errs.Wrap(errs.Internal, err, "建不了 downloads 目录："+err.Error())
@@ -186,7 +210,7 @@ func (f *fetcher) download(ctx context.Context, c root.SDKComponent) (string, er
 	if st, err := os.Stat(zipFile); err == nil {
 		f.where = "校验上次下好的 " + name
 		f.say(fmt.Sprintf("  发现上次下好的 %s，校验中…", name))
-		if sha, err := fileSHA1(zipFile); err == nil && st.Size() == c.Size && sha == c.SHA1 {
+		if sha, err := fileSHA1(zipFile); err == nil && st.Size() == c.Size && sha == c.SHA1 && archiveSHA256Matches(zipFile, c.SHA256) {
 			f.say("  校验通过，直接用")
 			return zipFile, nil
 		}
@@ -201,14 +225,18 @@ func (f *fetcher) download(ctx context.Context, c root.SDKComponent) (string, er
 		if err != nil {
 			return "", errs.Wrap(errs.Internal, err, "读不了 "+part+"："+err.Error())
 		}
-		if sha == c.SHA1 {
+		if sha == c.SHA1 && archiveSHA256Matches(part, c.SHA256) {
 			f.say("  校验通过，直接用")
 			if err := os.Rename(part, zipFile); err != nil {
 				return "", err
 			}
 			return zipFile, nil
 		}
-		f.warn("  上次留下的 .part SHA-1 不对，丢弃后重新下载")
+		if c.SHA256 != "" {
+			f.warn("  上次留下的 .part SHA-1/SHA-256 校验不通过，丢弃后重新下载")
+		} else {
+			f.warn("  上次留下的 .part SHA-1 不对，丢弃后重新下载")
+		}
 		if err := os.Remove(part); err != nil {
 			return "", err
 		}
@@ -263,6 +291,13 @@ func (f *fetcher) download(ctx context.Context, c root.SDKComponent) (string, er
 		if sha != c.SHA1 {
 			f.warn(fmt.Sprintf("  SHA-1 不对：%s，应为 %s；丢弃，换下一个镜像", sha, c.SHA1))
 			reasons = append(reasons, fmt.Sprintf("%s 校验：SHA-1 为 %s，应为 %s", m.Name, sha, c.SHA1))
+			only416 = false
+			os.Remove(part)
+			continue
+		}
+		if !archiveSHA256Matches(part, c.SHA256) {
+			f.warn("  SHA-256 不对或文件不可读；丢弃，换下一个镜像")
+			reasons = append(reasons, m.Name+" 校验：SHA-256 与固定归档不符")
 			only416 = false
 			os.Remove(part)
 			continue
@@ -329,6 +364,22 @@ func fileSHA1(p string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func archiveSHA256Matches(path, want string) bool {
+	if want == "" {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return hex.EncodeToString(h.Sum(nil)) == want
 }
 
 // clampMB is mb MiB in bytes without overflowing.
