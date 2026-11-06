@@ -13,6 +13,7 @@ import (
 
 	"modavd/internal/adb"
 	"modavd/internal/apk"
+	"modavd/internal/root"
 )
 
 // The host input method org.modavd.ime: the guest half of the emulator's modavd_ime channel; what the user types
@@ -195,16 +196,22 @@ func (p hostImePlan) commands() []string {
 	return cmds
 }
 
-// hostImeChannel: the emulator has the modavd_ime channel. AUTO-MAS checks the build (mas-35+); the launcher checks
-// the emulator log of the boot it started. Either is enough (a dev SDK's build id may be anything). why says what
+// hostImeChannel verifies the modavd_ime channel. Windows accepts the mas-35+
+// build contract or the current boot's registration log. Other hosts require
+// that registration in the verified current emulator boot's log. why says what
 // is missing.
 func (m *Manager) hostImeChannel(launched bool, logPath string) (ok bool, why string) {
 	build, known := m.Root.ModBuild()
-	if known && build >= hostImeMinBuild {
+	// The build-number contract describes the Windows core. Other hosts need
+	// the registration message from the boot being configured.
+	if root.CurrentPlatform().Windows() && known && build >= hostImeMinBuild {
 		return true, ""
 	}
 	if launched && fileContains(logPath, hostImeChannelLine) {
 		return true, ""
+	}
+	if !root.CurrentPlatform().Windows() {
+		return false, "当前开机日志没有 modavd_ime 通道注册记录"
 	}
 	if known {
 		return false, fmt.Sprintf("内测包 mas-%d 低于 mas-%d", build, hostImeMinBuild)

@@ -413,6 +413,7 @@ func (s *server) handleComponentsFetch(w http.ResponseWriter, r *http.Request) {
 		Mirror        string   `json:"mirror"`
 		MirrorURLs    []string `json:"mirror_urls"`
 		LicenseSHA256 string   `json:"license_sha256"`
+		PlayStore     bool     `json:"play_store"` // also the optional Google Play Store
 	}
 	if !decode(w, r, &body) {
 		return
@@ -438,7 +439,7 @@ func (s *server) handleComponentsFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v, err := s.startRootJob(kindComponents, func(ctx context.Context, j *job, _ backend) (any, error) {
-		return s.jobDiag(j).Fetch(ctx, true, source, body.LicenseSHA256, func(p DiagProgress) { s.setDiagProgress(j, p) })
+		return s.jobDiag(j).Fetch(ctx, true, body.PlayStore, source, body.LicenseSHA256, func(p DiagProgress) { s.setDiagProgress(j, p) })
 	})
 	s.respondJob(w)(v, err)
 }

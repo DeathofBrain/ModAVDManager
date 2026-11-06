@@ -32,6 +32,7 @@ import (
 	"modavd/internal/errs"
 	"modavd/internal/host"
 	"modavd/internal/logx"
+	"modavd/internal/playstore"
 	"modavd/internal/root"
 )
 
@@ -52,6 +53,10 @@ var (
 	fetchGOOS          = runtime.GOOS
 	componentCatalogue = root.SDKComponents
 	diskFree           = host.DiskFree
+	// playStoreCatalogue is the optional Google Play Store (Options.PlayStore); playStoreExtract takes its files out of
+	// the Play image's system.img.
+	playStoreCatalogue = root.PlayStoreComponent
+	playStoreExtract   = playstore.Extract
 )
 
 // License returns the Android SDK license text and the mirror it came from, read from the mirrors of source the
@@ -111,6 +116,9 @@ type Options struct {
 	Input io.Reader
 	// KeepDownloads keeps the zips in downloads\ after installing (deleted by default: 1.5 GB).
 	KeepDownloads bool
+	// PlayStore also fetches the optional Google Play Store (root.PlayStoreComponent, ModAVD#125): Google's Play image,
+	// out of whose system.img only the store's files are kept.
+	PlayStore bool
 	// Mirror keeps only that built-in mirror (googledownloads_cn / tencent / google, any case). MirrorURLs replace the
 	// built-in list, tried in order (each entry may hold several, comma-separated), and win over Mirror.
 	Mirror     string
@@ -325,6 +333,9 @@ func Fetch(ctx context.Context, r *root.Root, o Options) (*Result, error) {
 	if fetchGOOS != "windows" && !(fetchGOOS == "darwin" && nativeDarwinComponents) {
 		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前支持 Windows 和 Apple Silicon macOS")
 	}
+	if o.PlayStore && fetchGOOS != "windows" {
+		return nil, errs.New(errs.Unsupported, "目前只有 Windows 能补全 Google Play 商店组件")
+	}
 	if r == nil {
 		return nil, errs.New(errs.NotFound, "找不到魔改 AVD 根目录")
 	}
@@ -377,16 +388,20 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 	if f.darwin() {
 		androidVersion = "15"
 	}
-	f.say("魔改 AVD：补全 Google 组件（adb、Android " + androidVersion + " 系统镜像）")
+	what := "adb、Android " + androidVersion + " 系统镜像"
+	if f.o.PlayStore {
+		what += "、Google Play 商店"
+	}
+	f.say("魔改 AVD：补全 Google 组件（" + what + "）")
 	f.say("文件夹：" + r.Dir)
 	free := "-1"
 	if f.o.TestFreeSpaceMB != nil {
 		free = fmt.Sprint(*f.o.TestFreeSpaceMB)
 	}
 	f.note(fmt.Sprintf("modavd %s，参数：AcceptLicense=%t Mirror=%s MirrorUrl=%s KeepDownloads=%t ConnectTimeoutSec=%s "+
-		"StallTimeoutSec=%s ManifestTimeoutSec=%s TestFreeSpaceMB=%s", buildinfo.Version, f.o.AcceptLicense, f.o.Mirror,
-		strings.Join(f.o.MirrorURLs, ","), f.o.KeepDownloads, seconds(f.o.ConnectTimeout), seconds(f.o.StallTimeout),
-		seconds(f.o.ManifestTimeout), free))
+		"StallTimeoutSec=%s ManifestTimeoutSec=%s TestFreeSpaceMB=%s PlayStore=%t", buildinfo.Version, f.o.AcceptLicense,
+		f.o.Mirror, strings.Join(f.o.MirrorURLs, ","), f.o.KeepDownloads, seconds(f.o.ConnectTimeout),
+		seconds(f.o.StallTimeout), seconds(f.o.ManifestTimeout), free, f.o.PlayStore))
 
 	if !isASCII(r.Dir) {
 		advice := `请把整个文件夹挪到只含英文、数字的路径下（例如 D:\ModAVD），再重新运行`
@@ -420,6 +435,9 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 	f.clearStaging()
 
 	specs := componentCatalogue()
+	if f.o.PlayStore {
+		specs = append(specs, playStoreCatalogue())
+	}
 	res = &Result{Root: r.Dir, Components: []ComponentResult{}, Downloads: []string{}}
 	var todo []root.SDKComponent
 	for _, c := range specs {
@@ -479,7 +497,11 @@ func (f *fetcher) run(ctx context.Context) (res *Result, err error) {
 			}
 		}
 		f.say("  解压安装…")
-		aside, err := f.install(ctx, c, zipFile)
+		install := f.install
+		if c.ID == playStoreCatalogue().ID {
+			install = f.installPlayStore
+		}
+		aside, err := install(ctx, c, zipFile)
 		if aside != "" {
 			f.asides = append(f.asides, setAsideRel(f.sdk, aside))
 		}

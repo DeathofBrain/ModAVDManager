@@ -279,6 +279,8 @@ function infoRows(inst) {
     ['渲染器', inst.renderer || (inst.initialized ? '未知' : '首次开机后才知道'), inst.software_renderer ? '软件渲染（没有可用的显卡驱动）' : ''],
     ['截图共享内存', shm.shm || '—', shm.shm ? (shm.shm_ready ? '已就绪' : '未就绪') : ''],
     ['首次初始化', inst.initialized ? '已完成' : `还没做（首次开机时做，${MIN12}）`],
+    // the record in mas-avd.json (InstanceInfo.play_store); the card's 「更多操作」 menu adds or removes it
+    ['Google Play 商店', inst.play_store ? '已补全' : '没有', inst.play_store ? '' : '要用的话在实例的「更多操作」菜单里补全'],
     ['路径', inst.path, 'mono', ibtn('folder', '打开实例目录', () => A.openFolder('instance', inst.index))],
   ];
 }
