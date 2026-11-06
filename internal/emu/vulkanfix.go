@@ -160,11 +160,7 @@ func (m *Manager) owedMountGate(i int, g guestIO) (release func(), b mountBlocke
 func (m *Manager) mountVulkanFix(ctx context.Context, i int, fx vulkanFixIO, profile vkfix.Profile, owed bool, until time.Time) (restarted,
 	pending bool) {
 	runFix := func() string {
-		args := profile.OrigSHA256 + " " + profile.FixSHA256
-		if profile.CacheName != vkfix.CacheName {
-			args += " " + profile.CacheName
-		}
-		res := fx.shell("su 0 sh "+fx.remote+" "+args, vulkanFixScriptTimeout)
+		res := fx.shell("su 0 sh "+fx.remote+" "+profile.OrigSHA256+" "+profile.FixSHA256, vulkanFixScriptTimeout)
 		return lastNonEmptyLine(res.Out)
 	}
 	// gatedFix is one vulkanfix.sh run, for an owed fix only once owedMountGate allows it, with the guest lock held
