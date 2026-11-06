@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -193,7 +195,7 @@ func init() {
 			run:     runCheck, human: humanOf(formatCheck),
 		},
 		{
-			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例里装的游戏（同「复制配置信息.bat」）",
+			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例里装的游戏",
 			details: "电脑、模拟器、硬件加速和开着的实例里装的游戏，显示出来并复制到剪贴板（--no-clipboard 不复制）。" +
 				"只读：只在实例开着、它的 adb server 已经在监听时按 adb 主机协议去问，不起 adb server、不调用 adb.exe、不碰 5037；" +
 				"不带用户名、电脑名和完整路径。目前只支持 Windows。",
@@ -202,7 +204,7 @@ func init() {
 		},
 		{
 			name: "collect-info", args: "[--out-dir 目录] [--stage-dir 目录] [--keep-stage] [--no-explorer]",
-			summary: "收集问题信息，打成 zip（同「收集问题信息.bat」）",
+			summary: "收集问题信息，打成 zip",
 			details: "打成「魔改AVD问题信息-<时间>.zip」，默认放桌面，再打开资源管理器选中它（--no-explorer 不打开）。" +
 				"--stage-dir 是暂存目录的父目录（默认 %TEMP%），--keep-stage 保留暂存目录。每一节单独收，出错写进 summary.txt 接着收下一节。" +
 				"只读：不收磁盘镜像，不收 AUTO-MAS 的配置和账号数据，不起 adb server、不碰 5037。目前只支持 Windows。",
@@ -210,17 +212,18 @@ func init() {
 			run: runCollectInfo, human: humanCollectInfo,
 		},
 		{
-			name: "components", args: "[status] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]",
+			name: "components", args: "[status] | source [auto|googledownloads_cn|tencent|google] | fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads]",
 			summary: "查看或补全 Google 组件（adb 和系统镜像）",
-			details: "status（默认）查看组件，和 check 里的组件一样。fetch 做随包「补全组件.bat」做的事：" +
+			details: "status（默认）查看组件，和 check 里的组件一样。fetch 补全缺少的组件：" +
 				"先从镜像取《Android 软件开发套件许可协议》全文并显示，输入 y 同意才继续，否则什么也不下；" +
 				"再依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载缺少的 adb 和系统镜像（约 1.5 GB，中断了再运行会接着下），" +
 				"校验后装进 sdk\\。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
-				"--json 时必须给 --accept-license。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
+				"不带参数时默认查看组件；source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）。" +
+				"--json 时必须给 --accept-license（仅 fetch）。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
 				"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
 				"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验也是 9（components_rejected）。",
 			flags:    fetchFlags,
-			posNames: []string{"status 或 fetch"}, maxPos: 1,
+			posNames: []string{"status、source 或 fetch", "下载源"}, maxPos: 2,
 			final: true,
 			run:   runComponents, human: formatComponents,
 		},
@@ -438,6 +441,15 @@ type HelpResult struct {
 type ComponentsStatusResult struct {
 	Root       string                `json:"root"`
 	Components []emu.ComponentStatus `json:"components"`
+}
+
+// ComponentsSourceResult is `components source`: the saved per-user choice.
+// Source is auto, one of the built-in mirror IDs, or custom when URLs are set.
+type ComponentsSourceResult struct {
+	Source     string   `json:"source"`
+	Mirror     string   `json:"mirror"`
+	MirrorURLs []string `json:"mirror_urls"`
+	Configured bool     `json:"configured"`
 }
 
 // ---- request building (pure, tested directly) --------------------------------------------------------------------
@@ -880,8 +892,39 @@ func runComponents(c *cmdCtx) (any, error) {
 	if len(c.inv.pos) > 0 {
 		action = strings.ToLower(c.inv.pos[0])
 	}
-	if action != "fetch" && action != "status" {
-		return nil, errs.Newf(errs.Usage, "只能是 status 或 fetch，收到「%s」", c.inv.pos[0]).WithAdvice(findCommand("components").usageAdvice())
+	if action != "fetch" && action != "status" && action != "source" {
+		return nil, errs.Newf(errs.Usage, "只能是 status、source 或 fetch，收到「%s」", c.inv.pos[0]).WithAdvice(findCommand("components").usageAdvice())
+	}
+	if action == "source" {
+		for _, f := range fetchFlags {
+			if c.inv.isSet(f.name) {
+				return nil, errs.Newf(errs.Usage, "%s 只用于 components fetch", strings.Join([]string{"--" + f.name}, "、")).
+					WithAdvice(findCommand("components").usageAdvice())
+			}
+		}
+		if len(c.inv.pos) > 2 {
+			return nil, errs.New(errs.Usage, "components source 最多带一个下载源").WithAdvice(findCommand("components").usageAdvice())
+		}
+		if len(c.inv.pos) == 1 {
+			return componentsSourceResult(components.LoadSourceSettings()), nil
+		}
+		choice := strings.ToLower(strings.TrimSpace(c.inv.pos[1]))
+		if choice == "auto" {
+			choice = ""
+		}
+		if choice != "" {
+			if _, err := components.ChooseMirrors(choice, nil); err != nil {
+				return nil, err
+			}
+		}
+		s, err := components.SaveSourceSettings(choice, nil)
+		if err != nil {
+			return nil, err
+		}
+		return componentsSourceResult(s), nil
+	}
+	if len(c.inv.pos) > 1 {
+		return nil, errs.Newf(errs.Usage, "components %s 只接受一个参数", action).WithAdvice(findCommand("components").usageAdvice())
 	}
 	if action == "status" {
 		var given []string
@@ -900,13 +943,30 @@ func runComponents(c *cmdCtx) (any, error) {
 		}
 		return &ComponentsStatusResult{Root: r.Dir, Components: emu.ComponentStatuses(r.Components())}, nil
 	}
+	var (
+		r   *root.Root
+		err error
+	)
+	// Legacy releases kept the choice in <root>\downloads\source.txt. Read it
+	// once before the first interactive fetch, then use the per-user setting.
+	if !c.inv.isSet("mirror") && !c.inv.isSet("mirror-url") && !c.inv.json && !c.inv.boolOpt("accept-license") && c.deps.stdinTerminal(c.stdin) {
+		r, err = c.deps.resolveRoot(c.inv.root)
+		if err != nil {
+			return nil, err
+		}
+		if _, _, err := components.ImportLegacySource(r.Dir); err != nil {
+			return nil, err
+		}
+	}
 	opt, err := fetchOptions(c)
 	if err != nil {
 		return nil, err
 	}
-	r, err := c.deps.resolveRoot(c.inv.root)
-	if err != nil {
-		return nil, err
+	if r == nil {
+		r, err = c.deps.resolveRoot(c.inv.root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	fetch := c.deps.fetchComponents
 	if fetch == nil {
@@ -919,15 +979,51 @@ func runComponents(c *cmdCtx) (any, error) {
 	return result, nil
 }
 
+func componentsSourceResult(s components.SourceSettings) *ComponentsSourceResult {
+	source := "auto"
+	if len(s.MirrorURLs) > 0 {
+		source = "custom"
+	} else if strings.TrimSpace(s.Mirror) != "" {
+		source = strings.ToLower(strings.TrimSpace(s.Mirror))
+	}
+	urls := append([]string{}, s.MirrorURLs...)
+	return &ComponentsSourceResult{Source: source, Mirror: s.Mirror, MirrorURLs: urls, Configured: s.Set}
+}
+
 // fetchOptions checks every option of components fetch (before the root is looked up) and wires the output: the
 // script's messages and progress lines go to the log, progress at most every 2 s like update; the license text and
 // the question are written whatever the log level (raw on stderr, or one log line each with --json).
 func fetchOptions(c *cmdCtx) (components.Options, error) {
 	inv := c.inv
+	input := c.stdin
+	if input == nil {
+		input = os.Stdin
+	}
 	o := components.Options{
-		AcceptLicense: inv.boolOpt("accept-license"), JSON: inv.json, Input: c.stdin,
+		AcceptLicense: inv.boolOpt("accept-license"), JSON: inv.json, Input: input,
 		KeepDownloads: inv.boolOpt("keep-downloads"), Mirror: inv.strOpt("mirror"), MirrorURLs: inv.strsOpt("mirror-url"),
 		Log: c.log,
+	}
+	// --mirror / --mirror-url win. Otherwise the saved per-user source; with none saved, someone at a console is
+	// asked once (and the answer saved), while --accept-license (automation), --json and a stdin that is not a
+	// console (pipe, file, NUL) are never asked: they use the default order and save nothing.
+	if !inv.isSet("mirror") && !inv.isSet("mirror-url") {
+		saved := components.LoadSourceSettings()
+		if !saved.Set && !o.AcceptLicense && !o.JSON && c.deps.stdinTerminal(input) {
+			buffered := bufio.NewReader(input)
+			choice, err := askComponentSource(c, buffered)
+			if err != nil {
+				return o, err
+			}
+			// Keep the reader that may already have buffered the answer to the
+			// subsequent license question.
+			o.Input = buffered
+			saved = choice
+		}
+		if saved.Set {
+			o.Mirror, o.MirrorURLs = saved.Mirror, append([]string(nil), saved.MirrorURLs...)
+			o.SourceOrigin = components.SourceFromSettings
+		}
 	}
 	for _, t := range []struct {
 		name string
@@ -979,6 +1075,31 @@ func fetchOptions(c *cmdCtx) (components.Options, error) {
 		}
 	}
 	return o, nil
+}
+
+func askComponentSource(c *cmdCtx, input io.Reader) (components.SourceSettings, error) {
+	fmt.Fprintln(c.stderr, "组件下载源还没有设置，请选择：")
+	fmt.Fprintln(c.stderr, "  1. 自动（googledownloads_cn、tencent、google，按顺序尝试）")
+	fmt.Fprintln(c.stderr, "  2. googledownloads_cn")
+	fmt.Fprintln(c.stderr, "  3. tencent")
+	fmt.Fprintln(c.stderr, "  4. google")
+	fmt.Fprint(c.stderr, "选择 [1]：")
+	line, err := bufio.NewReader(input).ReadString('\n')
+	if err == io.EOF {
+		// EOF without an interactive answer means automatic order for this run;
+		// do not persist a choice inferred from a closed pipe.
+		return components.SourceSettings{}, nil
+	}
+	choice := strings.TrimSpace(line)
+	if choice == "" || choice == "1" {
+		return components.SaveSourceSettings("", nil)
+	}
+	ids := map[string]string{"2": "googledownloads_cn", "3": "tencent", "4": "google"}
+	mirror, ok := ids[choice]
+	if !ok {
+		return components.SourceSettings{}, errs.Newf(errs.InvalidArgument, "组件下载源编号无效：%s", choice)
+	}
+	return components.SaveSourceSettings(mirror, nil)
 }
 
 func runWindow(c *cmdCtx) (any, error) {
