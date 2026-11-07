@@ -110,26 +110,34 @@ const PlayStoreName = "Google Play 商店"
 // services, GSF and Partner Setup taken out of Google's Play image of the same release, kept in <sdk>\playstore. It is
 // not in SDKComponents, so check, components status and AUTO-MAS never count it as missing; only `components fetch
 // --play-store` fetches it, and only instances created or set up with the store use it. Complete pins every file's
-// SHA-256. The zip unpacks into one 3 GB system.img that fetch reads the files out of and deletes (ExtractedBytes
+// SHA-256. The zip unpacks into a host-specific system.img that fetch reads the files out of and deletes (ExtractedBytes
 // counts both); on hosts without a catalogue the URL is "".
 func PlayStoreComponent() SDKComponent {
-	files := make([]string, len(playstore.Files))
+	p := playstore.CurrentProfile()
+	files := make([]string, len(p.Files))
 	hashes := map[string]string{}
-	for k, f := range playstore.Files {
+	for k, f := range p.Files {
 		files[k] = f.Name
 		hashes[f.Name] = f.SHA256
 	}
 	c := SDKComponent{ID: "play-store", Name: PlayStoreName,
-		FetchName: "Google Play 商店（取自 Android 14 Google Play x86_64 镜像 r14）", Version: playstore.Revision,
+		FetchName: "Google Play 商店（取自 Android 14 Google Play x86_64 镜像 r14）", Version: p.Revision,
 		Target: PlayStoreDir, StatusFiles: files, KeyFiles: files, KeyHashes: hashes}
-	if runtime.GOOS == "windows" {
-		c.URL, c.Size, c.SHA1, c.ArchiveRoot = playstore.ImageURL, playstore.ImageSize, playstore.ImageSHA1, "x86_64"
-		// the Google APIs image's zip has the same last part (x86_64-34_r14.zip): another name, or a .part of one
-		// would be resumed as the other
-		c.ZipName = "google_apis_playstore-x86_64-34_r14.zip"
-		c.ExtractedBytes = playstore.ImageMemberSize + playstore.ExtractedBytes()
+	darwin := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+	if runtime.GOOS == "windows" || darwin {
+		c.URL, c.Size, c.SHA1, c.ArchiveRoot = p.ImageURL, p.ImageSize, p.ImageSHA1, p.ArchiveRoot
+		c.SHA256, c.ZipName = p.ImageSHA256, p.ZipName
+		c.ExtractedBytes = p.ImageMemberSize + p.ExtractedBytes()
 		c.Properties = "Pkg.Desc=Google Play Store, Google Play services, GSF and Partner Setup from " +
-			"system-images;android-34;google_apis_playstore;x86_64.\nPkg.Revision=" + playstore.Revision + "\n"
+			"system-images;android-" + p.API + ";google_apis_playstore;" + p.ABI + ".\nPkg.Revision=" + p.Revision + "\n"
+	}
+	if darwin {
+		c.FetchName = "Google Play 商店（取自 Android 15 Google Play arm64-v8a 镜像 r9）"
+		c.LicenseID, c.LicenseManifest = "android-sdk-arm-dbt-license", "sys-img/google_apis_playstore/sys-img2-3.xml"
+		c.LicenseSHA256 = "0682da42e0ca119ce29503c265587f8ae17277094f9262b54c1d2bb99557c6f5"
+		c.RequiredProperties = map[string]string{"SystemImage.Abi": p.ABI, "AndroidVersion.ApiLevel": p.API,
+			"SystemImage.TagId": "google_apis_playstore"}
+		c.Properties += "SystemImage.Abi=" + p.ABI + "\nAndroidVersion.ApiLevel=" + p.API + "\nSystemImage.TagId=google_apis_playstore\n"
 	}
 	return c
 }
@@ -225,6 +233,12 @@ func (c SDKComponent) Complete(dir string) bool {
 			return false
 		}
 	}
+	return c.MetadataMatches(dir)
+}
+
+// MetadataMatches checks the pinned revision and guest identity without hashing
+// large files. Status polling uses it; publication still requires Complete.
+func (c SDKComponent) MetadataMatches(dir string) bool {
 	data, err := ReadFileShared(filepath.Join(dir, "source.properties"))
 	if err != nil {
 		return false

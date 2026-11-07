@@ -1,4 +1,5 @@
-// Package playstore is the Google Play Store a ModAVD instance can have (ModAVD/ModAVD#125). The instances run
+// Package playstore prepares pinned Google Play files and supports Windows instance installation (ModAVD/ModAVD#125).
+// Host-specific component tables live in profile.go; macOS currently only prepares API35 ARM64 files. Windows instances run
 // Google's "Google APIs" image, which has Google Play services but no store; the store comes from Google's "Google
 // Play" image of the same release (system-images;android-34;google_apis_playstore;x86_64 r14), downloaded on the
 // user's computer like the other Google components and never shipped by ModAVD.
@@ -10,8 +11,8 @@
 // store's fs-verity certificate. They go into the instance's writable system overlay, which only instances with the
 // execution bridge have; the image's own com.android.vending, a license-check placeholder, is hidden there.
 //
-// Files is the table of those files; Extract takes them out of the Play image's system.img (GPT, then the dynamic
-// partitions of its super partition, then ext4) without mounting anything.
+// Files is the Windows table; Extract reads a profile's files from system.img (GPT, then the dynamic partitions of
+// its super partition, then ext4 or EROFS) without mounting anything.
 package playstore
 
 import "path"

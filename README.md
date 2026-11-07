@@ -102,6 +102,8 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 
 **Google Play 商店**（`components fetch --play-store`、`components import-playstore`、`playstore`，ModAVD#125）：
 
+Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` r9：官方归档为 `arm64-v8a-35_r09.zip`（约 1.8 GB）。许可确认后下载，或导入自己的归档/五个文件，按该版本的大小和摘要校验后保存到 `sdk/playstore/`。它与下面的 Windows API34 x86_64 文件不混用。当前 macOS 仅准备组件，实例内安装与移除尚未开放，不要求安装执行桥。
+
 - 实例用的 Google APIs 镜像有 Play 服务、没有商店。商店取自 Google 官方的 `system-images;android-34;google_apis_playstore;x86_64` r14（和实例的镜像同一期）里的五个文件：商店、Google 签名的 Play 服务、GSF、合作伙伴设置和商店的 fs-verity 证书。根目录只留这五个文件（`sdk\playstore\`），每台实例要的时候再装进去；新建的实例不带。
 - 根目录的五个文件有两种来法，都是可选的，`components status`、`check` 不把它们算进必需组件：
   - 下载：`components fetch --play-store`（管理器「补全组件」里勾选「补全 Google Play 商店服务」）同意许可协议后下载这个镜像（约 1.5 GB），从里面的 `system.img` 只读取出五个文件，每个都核对写死的大小和 SHA-256，然后删掉解出的 `system.img` 和下载的压缩包（`--keep-downloads` 时压缩包留着）。已经有了就跳过。

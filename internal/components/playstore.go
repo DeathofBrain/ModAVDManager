@@ -42,7 +42,7 @@ const (
 
 // playStoreFiles is the table of the five files (a variable for the tests, with root.PlayStoreComponent's pins
 // swapped in through playStoreCatalogue to match).
-var playStoreFiles = playstore.Files
+var playStoreFiles = playstore.CurrentProfile().Files
 
 // PlayStoreFile is one of the five files in a PlayStoreStatus.
 type PlayStoreFile struct {
@@ -56,18 +56,23 @@ type PlayStoreFile struct {
 // instance buttons show. Cheap: sizes and source.properties only; the SHA-256 of each file is checked where the files
 // are put in (fetch, import) and used (playstore install).
 type PlayStoreStatus struct {
-	Dir     string          `json:"dir"`     // <sdk>\playstore
-	Ready   bool            `json:"ready"`   // all five are there and source.properties has the revision
-	Source  string          `json:"source"`  // download, import, or "" (none, or put there some other way)
-	Version string          `json:"version"` // Pkg.Revision, "" when none
-	Files   []PlayStoreFile `json:"files"`
+	Dir              string          `json:"dir"`     // <sdk>\playstore
+	Ready            bool            `json:"ready"`   // all five are there and source.properties has the revision
+	Source           string          `json:"source"`  // download, import, or "" (none, or put there some other way)
+	Version          string          `json:"version"` // Pkg.Revision, "" when none
+	Files            []PlayStoreFile `json:"files"`
+	Archive          string          `json:"archive"`           // the matching Google Play image zip
+	DownloadBytes    int64           `json:"download_bytes"`    // size of that archive
+	InstallSupported bool            `json:"install_supported"` // preparing the files does not enable instance operations
 }
 
 // PlayStoreState reads r's Google Play Store files (in the SDK the instances run on).
 func PlayStoreState(r *root.Root) PlayStoreStatus {
 	c := playStoreCatalogue()
 	dir := c.Dir(r.RuntimeSDK())
-	st := PlayStoreStatus{Dir: dir, Files: []PlayStoreFile{}}
+	profile := playstore.CurrentProfile()
+	st := PlayStoreStatus{Dir: dir, Files: []PlayStoreFile{}, Archive: filepath.Base(profile.ImageURL),
+		DownloadBytes: profile.ImageSize, InstallSupported: root.CurrentPlatform().Windows()}
 	all := true
 	for _, f := range playStoreFiles {
 		fi, err := os.Stat(filepath.Join(dir, f.Name))
@@ -81,6 +86,9 @@ func PlayStoreState(r *root.Root) PlayStoreStatus {
 		st.Source = values[playStoreSourceKey]
 	}
 	st.Ready = all && strings.EqualFold(st.Version, c.Version)
+	if len(c.RequiredProperties) != 0 {
+		st.Ready = all && c.MetadataMatches(dir)
+	}
 	return st
 }
 
@@ -160,7 +168,7 @@ func importRejected(reason, format string, args ...any) *errs.Error {
 }
 
 // ImportPlayStore puts the Google Play Store's five files into r's sdk\playstore from files the user has: Google's
-// Play image zip (x86_64-34_r14.zip under any name, checked against the size and SHA-1 of Google's repository, then
+// Play image zip for this host (under any name, checked against the size and SHA-1 of Google's repository, then
 // read like a download), or the five files themselves under any names (each checked against its pinned size and
 // SHA-256 while it is copied). A file whose size is neither is refused before anything is read; one whose hash does
 // not match after; nothing changes then. Files not given are taken from sdk\playstore when they are there and match,
@@ -168,30 +176,40 @@ func importRejected(reason, format string, args ...any) *errs.Error {
 // are still checked and nothing changes (Skipped). The user's files are only read. It holds the fetch's lock and
 // writes logs\fetch-components.log like a fetch; no license is asked (nothing is downloaded).
 //
-// Error codes: Unsupported (not Windows), Usage (no file), NotFound, NotReady (not a ModAVD root, or sdkRoot set),
+// Error codes: Unsupported (no native catalogue), Usage (no file), NotFound, NotReady (not a ModAVD root, or sdkRoot set),
 // Busy (a fetch or an import runs), PrecheckFailed (space), ComponentsRejected (errs.Reason: ImportReason*),
 // Canceled, Internal.
 func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Options) (res *PlayStoreImportResult, err error) {
-	if fetchGOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前只有 Windows 能补全组件")
+	if fetchGOOS != "windows" && !(fetchGOOS == "darwin" && nativeDarwinComponents) {
+		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前支持 Windows 和 Apple Silicon macOS")
 	}
 	if r == nil {
 		return nil, errs.New(errs.NotFound, "找不到魔改 AVD 根目录")
 	}
 	if len(files) == 0 {
 		return nil, errs.New(errs.Usage, "没有给要导入的文件").
-			WithAdvice("给 Google Play 版镜像的压缩包 x86_64-34_r14.zip，或者商店的五个文件：" + strings.Join(playStoreNames(), "、"))
+			WithAdvice("给 Google Play 版镜像的压缩包 " + filepath.Base(playstore.CurrentProfile().ImageURL) + "，或者商店的五个文件：" + strings.Join(playStoreNames(), "、"))
 	}
 	if o.Log == nil {
 		o.Log = logx.Nop()
 	}
+	o.PlayStore = true
 	f := &fetcher{r: r, o: o, sdk: r.SDK()}
-	if _, err := os.Stat(filepath.Join(f.sdk, "emulator", "emulator.exe")); err != nil {
-		return nil, errs.Newf(errs.NotReady, `这里没有 sdk\emulator\emulator.exe，不像是魔改 AVD 的文件夹：%s`, r.Dir)
+	emulator := filepath.Join("sdk", "emulator", root.CurrentPlatform().Emulator)
+	if _, err := os.Stat(filepath.Join(f.sdk, "emulator", root.CurrentPlatform().Emulator)); err != nil {
+		return nil, errs.Newf(errs.NotReady, "这里没有 %s，不像是魔改 AVD 的文件夹：%s", emulator, r.Dir)
 	}
 	if r.LocalSDKRoot() != "" {
 		return nil, errs.New(errs.NotReady, "这个根目录在 mas-avd.json 里设了 sdkRoot（开发用的本地 SDK），不导入组件").
 			WithAdvice(`实例用的是那份 SDK；要给这个根目录的 sdk\ 导入，先去掉 sdkRoot`)
+	}
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return nil, err
+		}
+		if err := f.checkImportSources(files); err != nil {
+			return nil, err
+		}
 	}
 	f.openLog()
 	defer f.closeLog()
@@ -206,12 +224,22 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 				f.note("失败：" + f.where)
 			}
 			f.note("原因：" + errs.As(err).Error())
-			f.clearStaging()
+			if !f.darwin() || f.platformPaths() == nil {
+				f.clearStaging()
+			}
 		}
 		f.note(fmt.Sprintf("退出码 %d", errs.ExitCode(err)))
 	}()
 	f.say("魔改 AVD：用自己的文件补全 Google Play 商店")
 	f.say("文件夹：" + r.Dir)
+	if f.darwin() {
+		if err := f.platformPaths(); err != nil {
+			return nil, err
+		}
+		if err := f.platformIdle(); err != nil {
+			return nil, err
+		}
+	}
 	f.clearStaging()
 
 	c := playStoreCatalogue()
@@ -236,6 +264,18 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 	if zipItem != nil {
 		res.From = "zip"
 		need = 500<<20 + c.ExtractedBytes
+		if f.darwin() {
+			// Hash and extract the same private copy: the user's path may be
+			// replaced after the import has verified it.
+			need += c.Size
+		}
+	} else if f.darwin() {
+		// Missing files are copied from the old component too. It remains in
+		// place until the complete replacement is ready.
+		need = 500 << 20
+		for _, pf := range playStoreFiles {
+			need += pf.Size
+		}
 	}
 	if err := f.importSpace(need); err != nil {
 		return nil, err
@@ -246,6 +286,13 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 		return nil, err
 	}
 	defer f.removeStaging(staging)
+	zipPath := ""
+	if zipItem != nil {
+		zipPath = zipItem.Path
+		if f.darwin() {
+			zipPath = filepath.Join(staging, "source.zip")
+		}
+	}
 	// every given file first: a wrong one refuses the import before the 3 GB of a zip are unpacked
 	have := make([]bool, len(playStoreFiles))
 	for k := range items {
@@ -255,14 +302,17 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 		}
 		if it.zip {
 			f.where = "校验 " + it.name()
-			f.say("校验 " + it.name() + "（SHA-1）…")
-			sum, err := f.readHashed(ctx, it.Path, sha1.New(), nil, it.name())
-			if err != nil {
-				return nil, err
+			algorithm := "SHA-1"
+			if c.SHA256 != "" {
+				algorithm += "、SHA-256"
 			}
-			if sum != c.SHA1 {
-				return nil, importRejected(ImportReasonMismatch, "%s 的 SHA-1 是 %s，应为 %s：不是 Google 仓库里那份 Google Play 版镜像（%s）",
-					it.name(), sum, c.SHA1, filepath.Base(playstore.ImageURL))
+			f.say("校验 " + it.name() + "（" + algorithm + "）…")
+			copyTo := ""
+			if f.darwin() && it == zipItem {
+				copyTo = zipPath
+			}
+			if err := f.verifyImportArchive(ctx, *it, c, copyTo); err != nil {
+				return nil, err
 			}
 		} else {
 			want := playStoreFiles[it.slot]
@@ -271,16 +321,16 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 			var sum string
 			if have[it.slot] {
 				// the same file given twice: checked, the first copy stays
-				sum, err = f.readHashed(ctx, it.Path, sha256.New(), nil, it.name())
+				sum, err = f.readHashed(ctx, it.Path, sha256.New(), nil, it.name(), want.Size)
 			} else {
-				sum, err = f.copyHashed(ctx, it.Path, filepath.Join(out, want.Name), it.name())
+				sum, err = f.copyHashed(ctx, it.Path, filepath.Join(out, want.Name), it.name(), want.Size)
 			}
 			if err != nil {
 				return nil, err
 			}
 			if sum != want.SHA256 {
-				return nil, importRejected(ImportReasonMismatch, "%s 和 Google Play 版镜像 r14 里的 %s 大小一样，SHA-256 却对不上（是 %s，应为 %s）",
-					it.name(), want.Name, sum, want.SHA256)
+				return nil, importRejected(ImportReasonMismatch, "%s 和 Google Play 版镜像 r%s 里的 %s 大小一样，SHA-256 却对不上（是 %s，应为 %s）",
+					it.name(), c.Version, want.Name, sum, want.SHA256)
 			}
 			have[it.slot] = true
 		}
@@ -295,7 +345,12 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 	}
 	if zipItem != nil {
 		emptyDir(out)
-		if err := f.playStoreFromZip(ctx, c, zipItem.Path, staging, out); err != nil {
+		if f.darwin() {
+			if err := f.importSpace(500<<20 + c.ExtractedBytes); err != nil {
+				return nil, err
+			}
+		}
+		if err := f.playStoreFromZip(ctx, c, zipPath, staging, out); err != nil {
 			return nil, err
 		}
 	} else {
@@ -307,7 +362,7 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 			// one already in place and right stays (copied: the old directory is only set aside when the new one is whole)
 			f.where = `检查 sdk\` + c.Target + `\` + pf.Name
 			if fi, err := os.Stat(filepath.Join(target, pf.Name)); err == nil && fi.Mode().IsRegular() && fi.Size() == pf.Size {
-				sum, err := f.copyHashed(ctx, filepath.Join(target, pf.Name), filepath.Join(out, pf.Name), pf.Name)
+				sum, err := f.copyHashed(ctx, filepath.Join(target, pf.Name), filepath.Join(out, pf.Name), pf.Name, pf.Size)
 				if errs.CodeOf(err) == errs.Canceled {
 					return nil, err
 				}
@@ -321,10 +376,10 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 		}
 		if len(missing) > 0 {
 			return nil, importRejected(ImportReasonIncomplete, "还缺 %s，什么也没有改", strings.Join(missing, "、")).
-				WithAdvice("把五个文件一起给出，或者给 Google Play 版镜像的压缩包 " + filepath.Base(playstore.ImageURL))
+				WithAdvice("把五个文件一起给出，或者给 Google Play 版镜像的压缩包 " + filepath.Base(c.URL))
 		}
 	}
-	aside, err := f.finishPlayStore(c, out, PlayStoreFromImport)
+	aside, err := f.finishPlayStore(ctx, c, out, PlayStoreFromImport)
 	res.SetAside = setAsideRel(f.sdk, aside)
 	if err != nil {
 		return nil, err
@@ -332,6 +387,87 @@ func ImportPlayStore(ctx context.Context, r *root.Root, files []ImportFile, o Op
 	f.say(`已装好：sdk\` + c.Target)
 	res.Status = PlayStoreState(r)
 	return res, nil
+}
+
+// A source inside staging would be deleted by clearStaging before it is read.
+// Compare real ancestor identities to cover symlinks and case aliases too.
+// This must run before any cleanup defer is registered.
+func (f *fetcher) checkImportSources(files []ImportFile) error {
+	staging, err := os.Stat(f.stagingRoot())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return errs.Wrap(errs.Internal, err, "读不了组件暂存目录")
+	}
+	for _, in := range files {
+		current, err := filepath.EvalSymlinks(in.Path)
+		if err != nil {
+			return errs.Newf(errs.NotFound, "找不到 %s", in.name())
+		}
+		current, err = filepath.Abs(current)
+		if err != nil {
+			return errs.Wrap(errs.Internal, err, "解析不了导入文件路径")
+		}
+		for {
+			info, err := os.Stat(current)
+			if err != nil {
+				return errs.Wrap(errs.Internal, err, "读不了导入文件的目录")
+			}
+			if os.SameFile(info, staging) {
+				return importRejected(ImportReasonUnknown, "%s 位于组件暂存目录内，不能作为导入源文件", in.name()).
+					WithAdvice("请先把源文件移到 sdk/.staging 之外，再重新导入；原文件未改动")
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
+		}
+	}
+	return nil
+}
+
+// verifyImportArchive checks the bytes read, and on macOS retains that checked
+// copy in private staging so extraction never reopens the user's mutable path.
+func (f *fetcher) verifyImportArchive(ctx context.Context, it importItem, c root.SDKComponent, copyTo string) error {
+	var writer io.Writer
+	var strong hash.Hash
+	if c.SHA256 != "" {
+		strong = sha256.New()
+		writer = strong
+	}
+	var out *os.File
+	if copyTo != "" {
+		var err error
+		out, err = os.OpenFile(copyTo, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return errs.Wrap(errs.Internal, err, "写不了导入镜像的暂存副本")
+		}
+		writer = out
+		if strong != nil {
+			writer = io.MultiWriter(out, strong)
+		}
+	}
+	sum, err := f.readHashed(ctx, it.Path, sha1.New(), writer, it.name(), c.Size)
+	if out != nil {
+		if cerr := out.Close(); err == nil && cerr != nil {
+			err = errs.Wrap(errs.Internal, cerr, "写不了导入镜像的暂存副本")
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if sum != c.SHA1 {
+		return importRejected(ImportReasonMismatch, "%s 的 SHA-1 是 %s，应为 %s：不是 Google 仓库里那份 Google Play 版镜像（%s）",
+			it.name(), sum, c.SHA1, filepath.Base(c.URL))
+	}
+	if strong != nil {
+		if got := hex.EncodeToString(strong.Sum(nil)); !strings.EqualFold(got, c.SHA256) {
+			return importRejected(ImportReasonMismatch, "%s 的 SHA-256 是 %s，应为 %s", it.name(), got, c.SHA256)
+		}
+	}
+	return nil
 }
 
 // emptyDir empties dir (out of a zip import: files given beside the zip were copied there and are not used).
@@ -368,18 +504,23 @@ func classifyImport(files []ImportFile, c root.SDKComponent) ([]importItem, erro
 		if !it.zip && it.slot < 0 {
 			return nil, importRejected(ImportReasonUnknown,
 				"%s（%d 字节）不是 Google Play 版镜像的压缩包 %s，也不是商店的五个文件（%s）之一",
-				in.name(), fi.Size(), filepath.Base(playstore.ImageURL), strings.Join(playStoreNames(), "、"))
+				in.name(), fi.Size(), filepath.Base(c.URL), strings.Join(playStoreNames(), "、"))
 		}
 		items = append(items, it)
 	}
 	return items, nil
 }
 
-// importSpace: need bytes must fit on the root's drive (TestFreeSpaceMB as in a fetch).
+// importSpace: imports are staged on the SDK's volume on macOS, which can differ
+// from the root's volume. TestFreeSpaceMB is treated as in a fetch.
 func (f *fetcher) importSpace(need int64) error {
 	drive := filepath.VolumeName(f.r.Dir) + `\`
+	spacePath := f.r.Dir
+	if f.darwin() {
+		drive, spacePath = f.sdk, f.sdk
+	}
 	f.where = "查 " + drive + " 的剩余空间"
-	freeBytes, err := diskFree(f.r.Dir)
+	freeBytes, err := diskFree(spacePath)
 	if err != nil {
 		return errs.Wrap(errs.Internal, err, fmt.Sprintf("查不了 %s 的剩余空间：%s", drive, errs.As(err).Message))
 	}
@@ -393,8 +534,9 @@ func (f *fetcher) importSpace(need int64) error {
 	return nil
 }
 
-// readHashed is the hex hash h of the file at p, read with progress (verifying) and a stop at cancel.
-func (f *fetcher) readHashed(ctx context.Context, p string, h hash.Hash, w io.Writer, name string) (string, error) {
+// readHashed is the hex hash h of the file at p, read with progress (verifying)
+// and a stop at cancel. Native imports also bound the copy to its pinned size.
+func (f *fetcher) readHashed(ctx context.Context, p string, h hash.Hash, w io.Writer, name string, expected int64) (string, error) {
 	in, err := os.Open(p)
 	if err != nil {
 		return "", errs.Wrap(errs.Internal, err, "读不了 "+name+"："+err.Error())
@@ -403,6 +545,9 @@ func (f *fetcher) readHashed(ctx context.Context, p string, h hash.Hash, w io.Wr
 	st, err := in.Stat()
 	if err != nil {
 		return "", errs.Wrap(errs.Internal, err, "读不了 "+name+"："+err.Error())
+	}
+	if f.darwin() && (!st.Mode().IsRegular() || st.Size() != expected) {
+		return "", importRejected(ImportReasonMismatch, "%s 在导入时已变化，类型或大小与组件清单不符", name)
 	}
 	m := newMeter(f.o.Progress, "verifying", name, max(st.Size(), 1), 0)
 	dst := io.Writer(h)
@@ -417,6 +562,9 @@ func (f *fetcher) readHashed(ctx context.Context, p string, h hash.Hash, w io.Wr
 		}
 		n, rerr := in.Read(buf)
 		if n > 0 {
+			if f.darwin() && done+int64(n) > expected {
+				return "", importRejected(ImportReasonMismatch, "%s 在导入时超过组件清单的大小", name)
+			}
 			if _, err := dst.Write(buf[:n]); err != nil {
 				return "", errs.Wrap(errs.Internal, err, "写不了 "+name+" 的副本："+err.Error())
 			}
@@ -430,18 +578,21 @@ func (f *fetcher) readHashed(ctx context.Context, p string, h hash.Hash, w io.Wr
 			return "", errs.Wrap(errs.Internal, rerr, "读不了 "+name+"："+rerr.Error())
 		}
 	}
+	if f.darwin() && done != expected {
+		return "", importRejected(ImportReasonMismatch, "%s 在导入时已变化，大小与组件清单不符", name)
+	}
 	m.finish(done)
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // copyHashed copies src to dst (new) and returns the SHA-256 of what was written: the copy is what gets checked, so a
 // file that changes meanwhile cannot slip in.
-func (f *fetcher) copyHashed(ctx context.Context, src, dst, name string) (string, error) {
+func (f *fetcher) copyHashed(ctx context.Context, src, dst, name string, expected int64) (string, error) {
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return "", errs.Wrap(errs.Internal, err, "写不了 "+dst+"："+err.Error())
 	}
-	sum, err := f.readHashed(ctx, src, sha256.New(), out, name)
+	sum, err := f.readHashed(ctx, src, sha256.New(), out, name, expected)
 	if cerr := out.Close(); err == nil && cerr != nil {
 		err = errs.Wrap(errs.Internal, cerr, "写不了 "+dst+"："+cerr.Error())
 	}

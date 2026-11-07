@@ -96,6 +96,8 @@ modavd [--root <dir>] [--json] [--quiet] [--verbose] <command> [args]
 
 **Google Play Store** (`components fetch --play-store`, `components import-playstore`, `playstore`, ModAVD#125):
 
+On Apple Silicon macOS, downloads and imports use Android 15 Google Play `arm64-v8a` r9: the official `arm64-v8a-35_r09.zip` archive (about 1.8 GB). After license consent, download it or import your own archive/five files; their pinned sizes and hashes are checked before publication to `sdk/playstore/`. These files are separate from the Windows API34 x86_64 profile described below. macOS currently only prepares the component; installation into an instance and removal remain unavailable, and no execution bridge is required to prepare the files.
+
 - The instances' Google APIs image has Google Play services but no store. The store is five files of Google's official `system-images;android-34;google_apis_playstore;x86_64` r14, the same release as the instances' image: the store, the Google-signed Play services, GSF and Partner Setup, and the store's fs-verity certificate. The root folder keeps only these five files (`sdk\playstore\`), and each instance gets them when asked; new instances never do.
 - The root gets the five files one of two ways, both optional (`components status` and `check` never count them as required):
   - Download: `components fetch --play-store` (in the manager, 「补全 Google Play 商店服务」 in the component dialog) downloads that image (about 1.5 GB) after the license agreement, reads the five files out of its `system.img` read-only, each checked against its built-in size and SHA-256, and deletes the unpacked `system.img` and the downloaded zip (the zip stays with `--keep-downloads`). Skipped when the files are there already.

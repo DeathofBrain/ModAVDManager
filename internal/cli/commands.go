@@ -86,7 +86,7 @@ var (
 		"不询问，直接视为同意《Android 软件开发套件许可协议》（自动化用；协议全文照样取回并打印，取不到照样退出）；--json 时必须给"}
 	optKeepDownloads = flagSpec{"keep-downloads", kindBool, "", "装好后保留 downloads 里的 zip（默认装好即删，省 1.5 GB）"}
 	optFetchStore    = flagSpec{"play-store", kindBool, "",
-		"也补全可选的 Google Play 商店：下 Google Play 版系统镜像（约 1.5 GB），只取出商店等 5 个文件（约 230 MB）"}
+		playStoreFetchHelp()}
 	optMirror    = flagSpec{"mirror", kindString, "ID", "只用一个内置镜像：googledownloads_cn / tencent / google"}
 	optMirrorURL = flagSpec{"mirror-url", kindStrings, "URL",
 		"自建或测试用：用这个目录地址代替内置的三个镜像，可写多次或用逗号隔开，按顺序试；给了就不看 --mirror"}
@@ -133,7 +133,9 @@ func init() {
 			"默认依次试 googledownloads.cn、腾讯云镜像、dl.google.com，下载约 1.8 GB，中断后再次运行会接着下；" +
 			"校验归档、版本和平台后装进 sdk/，保留执行权限。已经齐全的跳过；不完整的旧目录改名为 <目录>.incomplete-<时间> 留着，不删。" +
 			"SDK 使用中会拒绝补全，请先自行关闭使用它的进程。组件补全后，当前 macOS 版本仍未开放实例创建与启动。" +
-			"--play-store 和 import-playstore 目前仅支持 Windows。" +
+			"--play-store 可选下载 Android 15 Google Play arm64-v8a r9 镜像（约 1.8 GB），校验后只保留商店等五个文件。" +
+			"import-playstore 可导入官方 arm64-v8a-35_r09.zip 或五个文件，按固定大小和摘要检查，不下载。" +
+			"这两项仅准备文件，当前 macOS 版本尚未开放实例内安装与移除。" +
 			"source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）；--mirror 或 --mirror-url 可覆盖本次选择。" +
 			"--json 时必须给 --accept-license（仅 fetch），表示已同意待下载组件的全部许可协议。" +
 			"退出码：未同意许可是 2（license_declined），未就绪或预检失败是 4，SDK 使用中或正在补全是 5，下载不可用或校验失败是 9。"

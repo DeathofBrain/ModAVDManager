@@ -26,9 +26,18 @@ func (f *fetcher) platformPaths() error {
 		filepath.Join(f.r.Dir, "downloads", licenseFile),
 		filepath.Join(f.r.Dir, "downloads", "android-sdk-arm-dbt-license.txt"),
 	}
-	for _, c := range componentCatalogue() {
+	specs := componentCatalogue()
+	if f.o.PlayStore {
+		specs = append(append([]root.SDKComponent(nil), specs...), playStoreCatalogue())
+	}
+	for _, c := range specs {
 		paths = append(paths, c.Dir(f.sdk))
 		files = append(files, f.zipPath(c), f.zipPath(c)+".part")
+		if c.ID == playStoreCatalogue().ID {
+			staging := filepath.Join(f.stagingRoot(), c.ID)
+			paths = append(paths, staging, filepath.Join(staging, root.PlayStoreDir))
+			files = append(files, filepath.Join(staging, "source.zip"), filepath.Join(staging, "system.img"))
+		}
 	}
 	for _, p := range paths {
 		rel, err := filepath.Rel(f.r.Dir, p)

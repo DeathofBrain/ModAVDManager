@@ -333,9 +333,6 @@ func Fetch(ctx context.Context, r *root.Root, o Options) (*Result, error) {
 	if fetchGOOS != "windows" && !(fetchGOOS == "darwin" && nativeDarwinComponents) {
 		return nil, errs.New(errs.Unsupported, "这个系统还没有组件清单").WithAdvice("目前支持 Windows 和 Apple Silicon macOS")
 	}
-	if o.PlayStore && fetchGOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "目前只有 Windows 能补全 Google Play 商店组件")
-	}
 	if r == nil {
 		return nil, errs.New(errs.NotFound, "找不到魔改 AVD 根目录")
 	}
