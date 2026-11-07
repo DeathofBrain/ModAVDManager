@@ -54,4 +54,3 @@ func OpenStableRead(string) (*os.File, error) { return nil, errUnsupported }
 
 // FileChangeStamp disables caching without a supported file identity API.
 func FileChangeStamp(*os.File) string { return "" }
-
