@@ -294,7 +294,7 @@ func (m *Manager) ensureLogcatRuntime(ctx context.Context, i int) string {
 		return ""
 	}
 	// The writer must outlive this CLI, just like adb. The helper owns both the pipe and the rotating files.
-	exe := filepath.Join(m.Root.Dir, "tools", "modavd.exe")
+	exe := filepath.Join(m.Root.Dir, "tools", root.CurrentPlatform().CLI())
 	token, err := captureRuntimeToken(m.Root)
 	if err != nil {
 		return ""
