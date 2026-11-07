@@ -14,7 +14,7 @@ import (
 )
 
 func managerPaths() []string {
-	return []string{"ModAVD.app/Contents/MacOS/ModAVD", "ModAVD.app/Contents/MacOS/modavd-webview", "tools/modavd", "tools/modavd-manager", "tools/modavd-webview"}
+	return []string{"ModAVD.app/Contents/MacOS/ModAVD", "tools/modavd", "tools/modavd-manager"}
 }
 
 // Reject redirected workspace paths before taking the lock or writing state.
