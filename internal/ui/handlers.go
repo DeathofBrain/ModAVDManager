@@ -531,12 +531,14 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.unlock()
-	// a check that finished while this request waited is as fresh as one started for it
+	// A refresh may share a refresh that finished while it waited, but a normal
+	// check may have reused the hardware probes' caches.
 	c.mu.Lock()
 	cached, cachedAt, cachedMemoryMB := c.res, c.at, c.memoryMB
+	cachedRefreshed := c.refreshed
 	generation := c.generation
 	c.mu.Unlock()
-	if cached != nil && cachedMemoryMB == memoryMB && (!refresh || cachedAt.After(asked)) {
+	if cached != nil && cachedMemoryMB == memoryMB && (!refresh || (cachedRefreshed && cachedAt.After(asked))) {
 		writeResult(cached)
 		return
 	}
@@ -547,7 +549,7 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Lock()
 	if c.generation == generation {
-		c.res, c.at, c.memoryMB = res, time.Now(), memoryMB
+		c.res, c.at, c.memoryMB, c.refreshed = res, time.Now(), memoryMB, refresh
 	}
 	c.mu.Unlock()
 	writeResult(res)
