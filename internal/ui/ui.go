@@ -390,6 +390,7 @@ type checkCache struct {
 	generation uint64
 	res        *emu.CheckResult
 	memoryMB   int
+	refreshed  bool
 	at         time.Time
 }
 
