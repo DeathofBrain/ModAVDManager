@@ -389,6 +389,7 @@ type checkCache struct {
 	mu         sync.Mutex
 	generation uint64
 	res        *emu.CheckResult
+	memoryMB   int
 	at         time.Time
 }
 
