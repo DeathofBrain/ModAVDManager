@@ -214,6 +214,7 @@ export function openSettings(i, field) {
       const r = await api.patch(`/api/instances/${i}`, pending);
       const k = S.list.instances.findIndex((x) => x.index === i);
       if (k >= 0 && r.instance) S.list.instances[k] = r.instance;
+      if ('memory_mb' in pending) S.checkIndex = i;
       if ('diagnostics' in pending) {
         let text = '诊断模式已开启，立即生效。';
         if (!pending.diagnostics) {
