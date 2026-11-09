@@ -1,7 +1,7 @@
 // Everything that changes something on the server, with the toasts that go with it.
 
 import { api } from './api.js';
-import { S, update, instance } from './store.js';
+import { S, update, instance, setInstances } from './store.js';
 import { toast, toastError, copyText } from './ui.js';
 import { quoted, dur, diskInfoText, diskTrimText, diskCompactText, playStoreText } from './format.js';
 import { openActivity, runCheck } from './panels.js';
@@ -141,7 +141,7 @@ export async function copy(text) {
 
 export async function loadInstances() {
   try {
-    S.list = await api.get('/api/instances');
+    setInstances(await api.get('/api/instances'));
     S.loadError = null;
   } catch (e) {
     if (!S.list) S.loadError = e;
