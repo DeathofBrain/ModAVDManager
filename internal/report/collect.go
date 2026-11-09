@@ -43,7 +43,7 @@ var (
 const (
 	nativeTimeout   = 20 * time.Second // Invoke-Native -TimeoutSec default
 	accelTimeout    = 30 * time.Second
-	collectZipStart = "魔改AVD问题信息-"
+	collectZipStart = "ModAVD-问题信息-"
 )
 
 // CollectOptions for Collect; the first three are the script's -OutDir, -StageDir and -KeepStage.
@@ -241,9 +241,9 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (r
 	}()
 
 	c := &collector{ctx: ctx, root: rootDir, h: h, opt: opt, stage: stage, start: start, adbPort: root.DefaultAdbServerPort}
-	c.progress("魔改 AVD 问题信息收集")
+	c.progress("ModAVD 问题信息收集")
 	c.progress("ModAVD 目录：" + rootDir)
-	c.L("魔改 AVD 问题信息")
+	c.L("ModAVD 问题信息")
 	c.L(PrivacyNote)
 	c.L("生成时间：" + start.Format("2006-01-02 15:04:05 -07:00"))
 	// the script names the PowerShell that ran it here
@@ -299,7 +299,7 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (r
 	}
 	if !c.masFound {
 		c.L("")
-		c.L("提示：没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志。")
+		c.L("提示：" + MasMissingNote)
 	}
 
 	res := &CollectResult{Stage: stage, Problems: append([]string{}, c.problems...), MasFound: c.masFound,
@@ -753,7 +753,7 @@ func (c *collector) runningAndAdb() error {
 		c.L(fmt.Sprintf("pid %d  启动于 %s", q.PID, ct))
 		cmd := q.CommandLine
 		if cmd == "" {
-			c.L("  qemu 命令行读不到（多半是 AUTO-MAS 以管理员运行），现场按 adb 设备列表推算")
+			c.L("  qemu 命令行读不到（多半是模拟器以管理员身份运行），现场按 adb 设备列表推算")
 			c.cmdlineUnreadable = true
 			continue
 		}
@@ -1464,7 +1464,7 @@ func (c *collector) autoMAS() error {
 		}
 	}
 	if loc == "" {
-		c.L("没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志")
+		c.L("没找到 AUTO-MAS 安装目录（不用 AUTO-MAS 的不用管）")
 		return nil
 	}
 	c.masFound = true
@@ -1614,7 +1614,7 @@ func (c *collector) live() error {
 	targets := append([]liveTarget(nil), c.running...)
 	if c.cmdlineUnreadable {
 		// fallback: the emulator-<port> serials of the device list, mapped to instance names with the port plan
-		c.L("qemu 命令行读不到（多半是 AUTO-MAS 以管理员运行），现场按 adb 设备列表推算")
+		c.L("qemu 命令行读不到（多半是模拟器以管理员身份运行），现场按 adb 设备列表推算")
 		res := c.adbDevicesCommand()
 		if res.TimedOut {
 			c.L("  adb devices：超时（20 秒），已放弃")

@@ -139,7 +139,7 @@ func (c *Client) reportGoneServer(k serverKind, port int) {
 	if found && (s.created == 0 || p.Created == s.created) {
 		what = "还在，但不再监听"
 	}
-	c.Log.Warnf("魔改 AVD %s adb server（端口 %d，pid %d，%s 起来的）%s%s", k.label, port, s.pid,
+	c.Log.Warnf("ModAVD %s adb server（端口 %d，pid %d，%s 起来的）%s%s", k.label, port, s.pid,
 		s.at.Format("15:04:05"), what, logTailText(ServerLogTail(c.Root)))
 }
 
@@ -159,7 +159,7 @@ func (c *Client) reportServerLog(k serverKind, port int, timeout time.Duration) 
 	if same {
 		return
 	}
-	c.Log.Warnf("魔改 AVD %s adb server（端口 %d）%.0f 秒内没监听上%s", k.label, port, timeout.Seconds(),
+	c.Log.Warnf("ModAVD %s adb server（端口 %d）%.0f 秒内没监听上%s", k.label, port, timeout.Seconds(),
 		logTailText(lines))
 }
 

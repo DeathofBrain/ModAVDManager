@@ -536,7 +536,7 @@ func collectDarwin(ctx context.Context, r *root.Root, h Host, opt CollectOptions
 	if len(problems) > 0 {
 		lines = append(lines, "未完成项目："+strings.Join(problems, "；"))
 	}
-	summary := "魔改 AVD macOS 问题信息\n" + darwinPrivacyNote + "\n" + sanitize(strings.Join(lines, "\n")) + "\n"
+	summary := "ModAVD macOS 问题信息\n" + darwinPrivacyNote + "\n" + sanitize(strings.Join(lines, "\n")) + "\n"
 	if err := writeClean("summary.txt", []byte(summary)); err != nil {
 		return nil, err
 	}

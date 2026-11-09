@@ -42,7 +42,7 @@ func TestWaitBootAdbUnusableAfterBoot(t *testing.T) {
 	adbAfterBootWait, bootRegisterEvery = 1500*time.Millisecond, 500*time.Millisecond
 	t0 := time.Now()
 	_, err := m.waitBoot(context.Background(), 3, time.Hour, &q, nil, "", &progressor{}, nil, nil)
-	if errs.CodeOf(err) != errs.Timeout || !strings.Contains(err.Error(), "魔改 AVD 实例 3 的安卓已经开好了（模拟器报告开机完成），但之后") ||
+	if errs.CodeOf(err) != errs.Timeout || !strings.Contains(err.Error(), "ModAVD 实例 3 的安卓已经开好了（模拟器报告开机完成），但之后") ||
 		!strings.Contains(err.Error(), "私有 adb（端口 20391）一直用不了") {
 		t.Fatalf("err %v", err)
 	}
