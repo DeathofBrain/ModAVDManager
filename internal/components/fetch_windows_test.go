@@ -11,6 +11,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -471,7 +472,7 @@ func TestFetchInstallsThenSkips(t *testing.T) {
 		t.Errorf("the download source line is not before the license:\n%s", logged)
 	}
 	for _, s := range []string{"参数：AcceptLicense=true", "  URL " + m.url() + "pt.zip", "下载结束：", "退出码 0",
-		"完成，可以在 AUTO-MAS 里添加这个文件夹了。"} {
+		"完成，可以新建实例了；用 AUTO-MAS 的，也可以在 AUTO-MAS 里添加这个文件夹了。"} {
 		if !strings.Contains(logged, s) {
 			t.Errorf("log lacks %q:\n%s", s, logged)
 		}
@@ -1010,8 +1011,13 @@ func TestFetchSetsAsideIncompleteDir(t *testing.T) {
 }
 
 // TestFetchPutsOldDirBack: when the new directory cannot be moved in (a file in it is held open here, without delete
-// sharing), the old one that was set aside goes back to its place with everything in it.
+// sharing, past the retries, and copying it fails too), the old one that was set aside goes back to its place with
+// everything in it.
 func TestFetchPutsOldDirBack(t *testing.T) {
+	savedFor, savedCopy := moveRetryFor, copyFileFn
+	t.Cleanup(func() { moveRetryFor, copyFileFn = savedFor, savedCopy })
+	moveRetryFor = 300 * time.Millisecond
+	copyFileFn = func(string, string) error { return errors.New("no copy here") }
 	pt := ptZip(t, adbBody)
 	setup(t, ptSpec(pt))
 	m := newMirror(t, map[string][]byte{"pt.zip": pt})
@@ -1046,6 +1052,40 @@ func TestFetchPutsOldDirBack(t *testing.T) {
 		if strings.Contains(e.Name(), ".incomplete-") {
 			t.Fatalf("%s left set aside", e.Name())
 		}
+	}
+}
+
+// TestFetchCopiesHeldDirIn: a staged file somebody keeps open (security software scanning what was just written) makes
+// the rename fail past its retries; the new directory is then copied into place, and the fetch succeeds.
+func TestFetchCopiesHeldDirIn(t *testing.T) {
+	savedFor := moveRetryFor
+	t.Cleanup(func() { moveRetryFor = savedFor })
+	moveRetryFor = 300 * time.Millisecond
+	pt := ptZip(t, adbBody)
+	setup(t, ptSpec(pt))
+	m := newMirror(t, map[string][]byte{"pt.zip": pt})
+	r := tempRoot(t)
+	var held *os.File
+	t.Cleanup(func() {
+		if held != nil {
+			held.Close()
+		}
+	})
+	o := opts(m)
+	o.Progress = func(p Progress) {
+		if p.Stage == "extracting" && p.Final && held == nil {
+			held, _ = os.Open(filepath.Join(r.SDK(), ".staging", "platform-tools", "platform-tools", "adb.exe"))
+		}
+	}
+	out := fetch(t, nil, r, o)
+	if held == nil {
+		t.Fatal("the staged adb.exe was not there to hold")
+	}
+	if out.err != nil {
+		t.Fatalf("fetch: %v", out.err)
+	}
+	if got := readText(t, filepath.Join(r.SDK(), "platform-tools", "adb.exe")); got != adbBody {
+		t.Fatalf("adb.exe %q", got)
 	}
 }
 

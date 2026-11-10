@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -46,13 +45,13 @@ func GameName(pkg string) (string, bool) {
 var notGames = []string{"de.jrpie.android.launcher"}
 
 // The lines the user fills in.
-var configTail = []string{"AUTO-MAS 版本：", "用的脚本（MAA / M9A / …）：", "效果（能跑 / 有问题，问题是…）："}
+var configTail = []string{"怎么用的（自己玩 / AUTO-MAS 及版本 / MAA、M9A 等脚本）：", "效果（能跑 / 有问题，问题是…）："}
 
 const (
-	configTitle    = "【魔改 AVD 试用配置】"
-	configNotOpen  = "游戏包：没有实例开着，读不到。在 AUTO-MAS 里开着实例时再双击运行一次，就会列出来"
+	configTitle    = "【ModAVD 试用配置】"
+	configNotOpen  = "游戏包：没有实例开着，读不到。开着实例时再生成一次，就会列出来"
 	emuCheckWait   = 20 * time.Second
-	clipboardOK    = "已复制到剪贴板：粘贴到群里，再把最后三行补上就行。"
+	clipboardOK    = "已复制到剪贴板：粘贴到群里，再把最后两行补上就行。"
 	clipboardError = "复制到剪贴板失败（%s），请手动选中上面的文字复制。"
 )
 
@@ -96,8 +95,8 @@ type ConfigInstance struct {
 // BuildConfig is report-config.ps1: prints nothing itself (the CLI prints Text and Message), copies Text to the
 // clipboard unless NoClipboard. Read-only; asks only adb servers that already listen (see the package comment).
 func BuildConfig(ctx context.Context, r *root.Root, opt ConfigOptions) (*ConfigResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "复制配置信息目前只支持 Windows")
+	if !reportsAvailable {
+		return nil, errs.New(errs.Unsupported, "复制配置信息目前只支持 Windows 和 Apple Silicon macOS")
 	}
 	h := opt.Host
 	if h == nil {
@@ -106,7 +105,12 @@ func BuildConfig(ctx context.Context, r *root.Root, opt ConfigOptions) (*ConfigR
 			return nil, err
 		}
 	}
-	res := buildConfig(ctx, r.Dir, h)
+	var res *ConfigResult
+	if native, ok := h.(nativeReporter); ok {
+		res = native.configuration(ctx, r)
+	} else {
+		res = buildConfig(ctx, r.Dir, h)
+	}
 	if err := ctx.Err(); err != nil {
 		// Ctrl+C: what was read by then is incomplete, nothing is copied
 		return nil, errs.Wrap(errs.Canceled, err, "已取消")

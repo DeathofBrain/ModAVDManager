@@ -33,6 +33,10 @@ const (
 	kindPlayStoreUninstall = "playstore-uninstall"
 	kindPlayStoreImport    = "playstore-import"
 
+	// the reported GLES 3.2 (gles32.go): an instance's switch on and off
+	kindGLES32On  = "gles32-on"
+	kindGLES32Off = "gles32-off"
+
 	stateRunning  = "running"
 	stateDone     = "done"
 	stateFailed   = "failed"
@@ -69,6 +73,12 @@ func kindLabel(kind string) string {
 		return "移除 Google Play 商店"
 	case kindPlayStoreImport:
 		return "导入 Google Play 商店的文件"
+	case kindGLES32On:
+		return "开启报告 GLES 3.2"
+	case kindGLES32Off:
+		return "关闭报告 GLES 3.2"
+	case kindUpdate:
+		return "整包更新"
 	}
 	return kind
 }
@@ -79,7 +89,7 @@ func sdkJob(kind string) bool { return kind == kindComponents || kind == kindPla
 
 func bootJob(kind string) bool {
 	switch kind {
-	case kindStart, kindCreate, "restart", kindPlayStoreInstall, kindPlayStoreUninstall:
+	case kindStart, kindCreate, "restart", kindPlayStoreInstall, kindPlayStoreUninstall, kindGLES32On, kindGLES32Off:
 		return true
 	}
 	return false
@@ -219,9 +229,21 @@ type jobFunc func(ctx context.Context, j *job, b backend) (any, error)
 // job (file log with the job id, log events, warnings). errs.Busy when the instance has a conflicting job.
 func (s *server) startJob(kind string, i int, fn jobFunc) (jobView, error) {
 	s.jobs.mu.Lock()
+	if s.handingOff.Load() {
+		s.jobs.mu.Unlock()
+		return jobView{}, errs.New(errs.Busy, "正在交给命令行换上新版，管理器马上关闭，换好后会自动重新打开")
+	}
 	for _, o := range s.jobs.list {
 		if o.view.State != stateRunning {
 			continue
+		}
+		// 设置 → 更新 stops every instance and replaces the whole package: it runs alone
+		if kind == kindUpdate || o.view.Kind == kindUpdate {
+			s.jobs.mu.Unlock()
+			if kind == kindUpdate {
+				return jobView{}, errs.Newf(errs.Busy, "%s%s还没做完（任务 %s），等它做完再更新", jobTarget(o.view.Index), kindLabel(o.view.Kind), o.view.ID)
+			}
+			return jobView{}, errs.Newf(errs.Busy, "正在整包更新（任务 %s），等它做完再试", o.view.ID)
 		}
 		if (sdkJob(kind) && o.view.Index != rootJobIndex && bootJob(o.view.Kind)) ||
 			(i != rootJobIndex && sdkJob(o.view.Kind) && bootJob(kind)) {

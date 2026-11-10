@@ -40,6 +40,8 @@ func (s *server) routes() {
 	m.HandleFunc("POST /api/instances/{i}/playstore-install", s.handlePlayStore("install"))
 	m.HandleFunc("POST /api/instances/{i}/playstore-uninstall", s.handlePlayStore("uninstall"))
 	m.HandleFunc("GET /api/instances/{i}/playstore-gsfid", s.handlePlayStoreGSFID)
+	m.HandleFunc("POST /api/instances/{i}/gles32-on", s.handleGLES32("on"))
+	m.HandleFunc("POST /api/instances/{i}/gles32-off", s.handleGLES32("off"))
 	m.HandleFunc("POST /api/instances/{i}/input", s.handleInput)
 	m.HandleFunc("GET /api/instances/{i}/screenshot", s.handleScreenshot)
 	m.HandleFunc("GET /api/instances/{i}/log", s.handleLog)
@@ -65,6 +67,7 @@ func (s *server) routes() {
 	m.HandleFunc("GET /api/update", s.handleUpdateGet)
 	m.HandleFunc("POST /api/update/check", s.handleUpdateCheck)
 	m.HandleFunc("POST /api/update/settings", s.handleUpdateSettings)
+	m.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
 	s.mux = m
 }
 

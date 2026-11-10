@@ -22,6 +22,8 @@ type backend interface {
 	Delete(ctx context.Context, i int) (*emu.DeleteResult, error)
 	Start(ctx context.Context, i int, opt emu.StartOptions) (*emu.StartResult, error)
 	Stop(ctx context.Context, i int, opt emu.StopOptions) (*emu.StopResult, error)
+	// StopTargets is what `stop --all` stops: the running or actively creating instances (设置 → 更新 stops them).
+	StopTargets(ctx context.Context) ([]int, error)
 	Check(ctx context.Context, opt emu.CheckOptions) (*emu.CheckResult, error)
 	Shell(ctx context.Context, i int, command string, timeout time.Duration) (*emu.ShellResult, error)
 	InstallAPK(ctx context.Context, i int, apkPath string) (*emu.InstallResult, error)
@@ -36,6 +38,9 @@ type backend interface {
 	PlayStoreCheck(i int, action string) error
 	// PlayStoreGSFID is `modavd playstore <i> gsfid`: a few seconds on a running instance.
 	PlayStoreGSFID(ctx context.Context, i int) (*emu.PlayStoreGSFIDResult, error)
+	// GLES32 is `modavd gles32 <i> on|off|status`; GLES32Check what it refuses before touching the instance (no bridge ...).
+	GLES32(ctx context.Context, i int, action string) (*emu.GLES32Result, error)
+	GLES32Check(i int, action string) error
 	// AdbRun is Manager.ADB.Run (the screenshot: exec-out screencap -p with Raw).
 	AdbRun(ctx context.Context, opt adb.RunOptions, args ...string) adb.Result
 	// Serial is instance i's adb serial in the root's port plan.

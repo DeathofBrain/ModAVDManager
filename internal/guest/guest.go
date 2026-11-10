@@ -5,14 +5,12 @@ package guest
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"debug/elf"
 	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -33,7 +31,8 @@ const ProxyDaemonName = "modavd-proxyd"
 // ErrNoProxyDaemon: this modavd was built without build.ps1, so it carries no guest daemon.
 var ErrNoProxyDaemon = errors.New("这个 modavd 编的时候没带按应用走代理的客体程序（要用 build.ps1 编）")
 
-// ProxyDaemon is cmd/modavd-proxyd for linux/amd64, as build.ps1 embedded it.
+// ProxyDaemon is cmd/modavd-proxyd for linux/amd64, as build.ps1 embedded it. It is embedded as is, not compressed:
+// a large compressed blob inside an exe is what antivirus models take for a dropper's payload.
 func ProxyDaemon() ([]byte, error) { return ProxyDaemonForABI("x86_64") }
 
 // ProxyDaemonForABI selects a packaged Linux guest executable. The historical
@@ -49,21 +48,12 @@ func ProxyDaemonForABI(abi string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("不支持的客体代理 ABI：%s", abi)
 	}
-	z, err := proxyd.ReadFile("proxyd/" + name + ".gz")
+	b, err := proxyd.ReadFile("proxyd/" + name)
 	if err != nil {
 		if abi == "x86_64" {
 			return nil, ErrNoProxyDaemon
 		}
-		return nil, fmt.Errorf("此构建未附带 ARM64 客体代理程序 %s.gz", name)
-	}
-	r, err := gzip.NewReader(bytes.NewReader(z))
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	b, err := io.ReadAll(io.LimitReader(r, 64<<20+1))
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("此构建未附带 ARM64 客体代理程序 %s", name)
 	}
 	if len(b) > 64<<20 {
 		return nil, errors.New("客体代理程序过大")
@@ -95,7 +85,11 @@ const (
 	CPUInfoBind  = "cpuinfo-bind.sh"
 	IdlePoll     = "mas-idlepoll.sh"
 	WifiFastpath = "mas-wifi-fastpath.sh"
-	VulkanFix    = "vulkanfix.sh"
+	// LibFix mounts the patched guest libraries, the Vulkan driver and the ARM translation layer (modavd only;
+	// AUTO-MAS keeps its own vulkanfix.sh for the Vulkan driver alone, with the same guest cache and upload names).
+	LibFix = "libfix.sh"
+	// GLES32 switches the OpenGL ES version the guest reports to 3.2 (modavd only, experimental, ModAVD/ModAVD#131).
+	GLES32 = "gles32.sh"
 	// PlayStore installs, checks and removes the Google Play Store (modavd only, not in AUTO-MAS).
 	PlayStore = "playstore.sh"
 )
