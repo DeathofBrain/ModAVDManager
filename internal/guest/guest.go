@@ -6,6 +6,7 @@ package guest
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/elf"
 	"embed"
 	"encoding/hex"
 	"errors"
@@ -32,17 +33,48 @@ var ErrNoProxyDaemon = errors.New("这个 modavd 编的时候没带按应用走�
 
 // ProxyDaemon is cmd/modavd-proxyd for linux/amd64, as build.ps1 embedded it. It is embedded as is, not compressed:
 // a large compressed blob inside an exe is what antivirus models take for a dropper's payload.
-func ProxyDaemon() ([]byte, error) {
-	b, err := proxyd.ReadFile("proxyd/" + ProxyDaemonName)
+func ProxyDaemon() ([]byte, error) { return ProxyDaemonForABI("x86_64") }
+
+// ProxyDaemonForABI selects a packaged Linux guest executable. The historical
+// filename stays reserved for x86_64; ARM64 never falls back to that executable.
+func ProxyDaemonForABI(abi string) ([]byte, error) {
+	name := ProxyDaemonName
+	machine := elf.EM_X86_64
+	switch abi {
+	case "x86_64":
+	case "arm64-v8a", "arm64", "aarch64":
+		name += "-arm64"
+		machine = elf.EM_AARCH64
+	default:
+		return nil, fmt.Errorf("不支持的客体代理 ABI：%s", abi)
+	}
+	b, err := proxyd.ReadFile("proxyd/" + name)
 	if err != nil {
-		return nil, ErrNoProxyDaemon
+		if abi == "x86_64" {
+			return nil, ErrNoProxyDaemon
+		}
+		return nil, fmt.Errorf("此构建未附带 ARM64 客体代理程序 %s", name)
+	}
+	if len(b) > 64<<20 {
+		return nil, errors.New("客体代理程序过大")
+	}
+	exe, err := elf.NewFile(bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("客体代理不是 ELF：%w", err)
+	}
+	defer exe.Close()
+	if exe.Class != elf.ELFCLASS64 || exe.Data != elf.ELFDATA2LSB || exe.Machine != machine ||
+		(exe.Type != elf.ET_EXEC && exe.Type != elf.ET_DYN) {
+		return nil, fmt.Errorf("客体代理的 ELF 架构与 %s 不匹配", abi)
 	}
 	return b, nil
 }
 
 // LocalProxyDaemon is LocalFile for the daemon.
-func LocalProxyDaemon(dir string) (string, error) {
-	b, err := ProxyDaemon()
+func LocalProxyDaemon(dir string) (string, error) { return LocalProxyDaemonForABI(dir, "x86_64") }
+
+func LocalProxyDaemonForABI(dir, abi string) (string, error) {
+	b, err := ProxyDaemonForABI(abi)
 	if err != nil {
 		return "", err
 	}
@@ -60,6 +92,9 @@ const (
 	GLES32 = "gles32.sh"
 	// PlayStore installs, checks and removes the Google Play Store (modavd only, not in AUTO-MAS).
 	PlayStore = "playstore.sh"
+	// DownloadDisk keeps the download folder of games that fsync after every few KB on a disk of its own, where
+	// fsync does not wait and the folder is committed as a whole every 3 s (modavd only, ModAVD/ModAVD#35).
+	DownloadDisk = "modavd-dldisk.sh"
 )
 
 // RemoteDir is where the scripts go in the guest.

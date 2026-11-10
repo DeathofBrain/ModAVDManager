@@ -73,13 +73,13 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 | `gles32 <i> on\|off\|status` | 实验功能：让实例报告 GLES 3.2（见下） |
 | `disk <i> trim` | 磁盘回收：在开着的实例里对数据盘触发一次 FITRIM；成功只表示触发请求已返回，不等待或确认客体回收完成；模拟器太旧、不支持回收时返回不支持（退出码 4） |
 | `disk <i> info` | 看数据盘的大小：逻辑大小、覆盖层在宿主上实际占的空间；关机且取得启动锁后才运行只读的 qcow2 元数据检查，给出已分配和估计可回收大小。整理中或锁不可用时，仅返回可读取的文件头、宿主占用和原因；不可读的数值省略，不修复镜像 |
-| `disk <i> compact` | 整理已关机实例的数据盘；预计收益不足时跳过重写；转换后先校验再原子替换，原盘在替换成功前不动；报告前后占用和增减；大盘预算可达数十小时，正常整理基本不会超时，停止请取消；仅支持 NTFS/ReFS，拒绝快照或重写空间不足，详见[预算与结果契约](internal/emu/COMPACT.md) |
+| `disk <i> compact` | 整理已关机实例的数据盘；预计收益不足时跳过重写；转换后先校验再原子替换，原盘在替换成功前不动；报告前后占用和增减；大盘预算可达数十小时，正常整理基本不会超时，停止请取消；Windows 支持 NTFS/ReFS，Apple Silicon macOS 支持 APFS，拒绝链接、快照或重写空间不足，详见[预算与结果契约](internal/emu/COMPACT.md) |
 | `check [--memory M]` | 开机前的电脑检查。不查内存（页面文件会补上物理内存的不足），`--memory` 留着兼容、不再起作用；真分不到内存时 `start` 报 `insufficient_memory`（退出码 10） |
 | `report-config [--no-clipboard]` | 复制电脑配置和开着实例里的游戏信息（只读） |
 | `collect-info [--out-dir D] [--stage-dir D] [--keep-stage] [--no-explorer]` | 收集问题信息并打包（只读）。除模拟器日志外，还收管理器、开机守护和私有 adb server 的日志（`modavd-ui.log`、`modavd-bootwatch.log`、`adb-server.log` 及其 `.1`，各取最后 5 MB）、所有 adb.exe 进程和 adb server 日志（`%TEMP%\adb.log` 最后 2 MB）、Windows 保留的 TCP 端口（netsh），并指出本目录要用的端口有没有落在里面；ZIP 完成前的 Ctrl+C 返回 `canceled`，删除未完成 ZIP 并清理暂存目录；`--keep-stage` 则保留暂存目录并在错误中给出路径 |
 | `components [status]`、`components source [auto\|googledownloads_cn\|tencent\|google]`、`components fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads] [--play-store]`、`components import-playstore <文件或文件夹>…` | 查看、选择或补全 Google 组件（adb 和系统镜像；见「补全 Google 组件」）；`--play-store`、`import-playstore` 补全可选的 Google Play 商店（见下） |
 | `window <i> show\|hide`、`install <i> <apk>`、`shell <i> <命令>`、`adb <i> -- <参数>` | 窗口、装 APK、客体命令、adb 透传 |
-| `update [status\|check\|prepare\|install\|recover] [--automas-version V]` | 更新根目录里的整个 ModAVD 包，按「设置」里的更新源（见「更新 ModAVD」） |
+| `update [status\|check\|prepare\|install\|recover] [--source github\|mirrorchyan] [--cdk-dpapi BASE64] [--automas-version V]` | 更新根目录里的整个 ModAVD 包，按「设置」里的更新源，或调用方这次传的更新源和 CDK（见「更新 ModAVD」） |
 | `servers`、`version`、`mcp`、`help [命令]` | |
 
 Apple Silicon macOS 支持 `report-config` 和 `collect-info`：读取硬件、macOS、HVF、Metal 和组件版本；游戏列表只向归属已确认的运行实例与现有私有 ADB 查询，不启动服务。问题包只收本目录的实例配置白名单和最多 8 份模拟器日志，每份最多 2 MiB、总文本最多 20 MiB，过滤常见凭据字段、路径和设备标识。macOS 不收截图、系统转储或其他应用日志；分享前请检查问题包。默认复制配置到剪贴板、用 Finder 显示问题包，自动化可用 `--no-clipboard` / `--no-explorer`。
@@ -91,6 +91,8 @@ Apple Silicon macOS 支持 `report-config` 和 `collect-info`：读取硬件、m
 `trim` 的 GUI 任务完成、MCP 成功返回和开机后自动回收日志都只表示触发请求已返回。
 自动回收日志里的秒数是 adb/su 命令往返耗时。客体是否完成或失败，需要另看客体信号，
 不能用暂时稳定的 discard 计数判定。
+
+Apple Silicon macOS 使用 SDK 中原生的 `qemu-img`。磁盘占用按宿主已分配块计算，排除稀疏文件空洞；APFS 克隆可能共享数据块，整理前后文件占用的差值不保证等于整个卷增加的可用空间。普通日志清理会检查实际打开的文件，保留正在使用、身份已变化、带链接或意外子目录的候选；macOS 的诊断模式开关仍未开放。
 
 **arm64 执行桥**：
 
@@ -143,7 +145,7 @@ Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` 
 **机读输出**（`--json`）：
 
 - stdout 只有一行：`{"ok":true,"data":…}` 或 `{"ok":false,"error":{"code","message","advice","details"}}`。`data` 的字段见 `internal/emu/types.go`，snake_case，所有字段一直出现。
-- 进度日志写 stderr，一行一个 JSON：`{"time","level","msg"}`。调用方不要把 stderr 并进 stdout。
+- 进度日志写 stderr，一行一个 JSON：`{"time","level","msg"}`，可能多出字段（比如 `update` 的进度行带 `progress`，见「更新 ModAVD」），调用方要容忍不认识的键。调用方不要把 stderr 并进 stdout。
 - `version --json` 的 `protocol` 是契约版本，命令或字段删了、改了含义才加一。0.3.0 起是 2：去掉了 `restart`，`start` 加了 `--headless`，运行中的实例和要的开机方式不一样时报 `busy`、不再接管，加了 `window`、`creation_progress` 字段；0.2.0 及以前是 1。
 - **端口**（0.3.1 起）：`list`、`check` 的 `port_base` 是这个根目录实际用的端口段（见下面「约定」里的 `portBase`），`status` 也带上了 `serial`、`adb_address`、`ports`（`list`、`info` 本来就有，关机的实例也有）。脚本要连实例时用这几个字段，不要自己按 20000 + 10 × 编号算。没有 `port_base` 的旧版 modavd 只会用 20000 段。
 - **错误的 `details`**：可选对象，值全部是字符串。增加这些键不改变现有 `code`、`message` 或 protocol；调用方要容忍缺少字段、不认识的键和值。管理器 HTTP 响应和失败任务保留同一份字段；MCP 的 `isError` 文本在原有错误后追加一行 `error.details: {…}`，其中 `{…}` 是 JSON。
@@ -186,10 +188,20 @@ Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` 
   - 选空余比例（空余核数 ÷ 这组的核数）最大的一组，一样时选 L3 大的；只开一台时就是 L3 大的那组。
   - 各组都放不下本实例的 vCPU 就不绑。
   - 空余是扣掉整台机器上所有 qemu 的 vCPU 以后算的，包括别的根目录和 AUTO-MAS 起的。那些进程只读、不改。
-- 下载这类小块密集写盘时，客体里每个 vCPU 起一个忙等循环（`mas-idlepoll.sh`），不让 vCPU 停机，下载更快。
+- 下载这类小块密集写盘，在 Windows 上靠开机时多给 QEMU 的两个参数加速，「写完」的含义不变（数据进了宿主文件才算完成）：
+  - `-global virtio-blk-pci.ioeventfd=off`：读写请求由 vCPU 线程直接处理，少几次线程交接。
+  - `-acpitable`：给客体一张空闲状态表（实例目录里的 `modavd-cst.aml`，按核数生成）。客体等读写完成时先忙等一小段（最多 200 µs）再停机，其余时候照常停机。
+  - 设环境变量 `MODAVD_SYNC_IO=off` 再开机，这两个参数都不带。
+- 表没带上时（`MODAVD_SYNC_IO=off`、实例读不出核数，或者表的路径放不进 QEMU 命令行），退回原来的办法：小块密集写盘时客体里每个 vCPU 起一个忙等循环（`mas-idlepoll.sh`），不让 vCPU 停机。
   - 循环数不超过宿主的余量：逻辑核数减去所有 qemu 的 vCPU 数（含本实例；绑了核就按那一组算）。
   - 所以逻辑核数不到本实例 vCPU 两倍的电脑上，只开一台也会少开：默认 6 核的实例在 8 线程的电脑上只开 2 个，6 线程及以下不开，下载会比开满时慢（在 7950X3D 上实测，1–2 个循环和不开差不多）。
   - 这是有意的取舍：给 qemu 自己的线程、Windows 和别的程序留出核。
+- 明日方舟的下载目录放在一块单独的「下载盘」上（客体脚本 `modavd-dldisk.sh`，只在 Windows 上）。游戏下资源时每写 7 KB 就 fsync 一次，在普通目录里每次都要等，约 8–11 MiB/s；在下载盘上 fsync 立即返回，整个目录每 3 秒落一次盘，实测 73–95 MiB/s。
+  - 模拟器被强杀或电脑崩溃以后，下载目录回到最后一次落盘时的样子，最多少 3 秒的进度，游戏接着下。解压出来的资源、账号、设置不在这块盘上，和以前一样。
+  - 守护每 3 秒看一次：游戏装上以后、第一次启动之前就把盘挂好；游戏开着时不动它；普通目录里有下到一半的，等那一轮下完再挂；卸载游戏或清了它的应用数据，盘跟着删。
+  - 盘是客体里的 `/data/local/tmp/modavd-dldisk/<包名>/dl.img`，一个最大 16 GB 的稀疏文件，删掉的包占的空间会还给数据盘。下载比解压快，下好的包会先堆在盘里：下整包资源时，数据盘的占用高峰比以前多约 6 GB。数据盘剩余不到 2 GB 时不建盘。
+  - 名单里是官服 `com.hypergryph.arknights` 和 B 服 `com.hypergryph.arknights.bilibili`（B 服没有实测，目录相同）。
+  - 设环境变量 `MODAVD_DL_DISK=off` 再开机：把盘里还没下完的搬回普通目录，删掉盘，不再起守护。
 分辨率只有两档：1080p 为 1920×1080 / DPI 280，720p 为 1280×720 / DPI 240。新建默认 1080p，720p 更省资源。管理器的新建和实例设置、CLI `--resolution 1080|720`、MCP `resolution` 使用同一套档位。已有实例按宽高识别：横屏或竖屏的 1920×1080 保持 1080p，其余配置及缺字段的旧配置保持 720p。换档联动宽、高、DPI，保留方向，下次冷启动生效；DPI 不单独设置，不使用运行时 `wm size` 或 `wm density`。自动化工具里的分辨率也要跟着改。
 
 AUTO-MAS 当前优先调用包内 CLI，这条启动路径保持所选档位。没有可用 CLI 的旧根目录会回退到固定 720p 的 Python 启动路径，使用 1080p 前须更新包内 CLI。AUTO-MAS 的旧新建和显示配置表单仍需配套支持两档；可先在 ModAVD 管理器里设置。
@@ -251,6 +263,8 @@ claude mcp add --transport stdio --scope user modavd '--' D:\ModAVD\tools\modavd
 
 ## 管理器 ModAVD.exe
 
+Apple Silicon macOS 可运行 `ModAVD` 管理器；`ModAVD.app` 放在包根目录时会自动定位根目录，也可以用 `--root` 指定。默认在系统浏览器打开页面；加 `--chrome-window` 使用独立 Chrome 应用窗口，Chrome 不可用时回到默认浏览器。状态和 Chrome 配置保存在 `~/Library/Application Support/ModAVD`，目录按钮用 Finder 打开。同一根目录再次启动只重开页面；关闭页面后按原有空闲和任务规则退出。实例功能仍受各项平台支持范围限制。
+
 双击包根的 `ModAVD.exe`：起一个只听 127.0.0.1 的本地服务，再用 Edge 的应用模式开一个窗口（`msedge --app`，Win10 / 11 自带）；找不到 Edge 时用默认浏览器。页面是内嵌在 exe 里的 HTML / CSS / JS，不需要联网；只有在「设置」里点「检查更新」时才联网。
 
 - 功能：实例卡片（在线时有画面缩略图）、开关机（带进度；开机一律带窗口，无头开机只走命令行；不提供重启，也不提供显示 / 隐藏窗口）、新建、设置、删除、电脑检查、活动面板、画面查看（点击即点按，返回 / 主页 / 最近任务）、日志、安装 APK、打开目录；浅色 / 深色 / 跟随系统。
@@ -263,14 +277,23 @@ claude mcp add --transport stdio --scope user modavd '--' D:\ModAVD\tools\modavd
 
 ## 更新 ModAVD
 
-`modavd update` 更新根目录里的整个 ModAVD 包（模拟器、组件、脚本，也包括 `ModAVD.exe` 和 `tools\modavd.exe` 自己），和 AUTO-MAS 里的 ModAVD 一键更新做的是同一件事，用的也是同一个 `<根>\.update\` 目录和状态文件：哪边更新到一半被打断，另一边都能接着补完或退回。按当前对接约定，AUTO-MAS 目前保留自己的更新器；是否以及何时改成调用这个命令，由 AUTO-MAS 项目自己的维护决定，这不是本仓库已经交付的功能或承诺。
+`modavd update` 更新根目录里的整个 ModAVD 包（模拟器、组件、脚本，也包括 `ModAVD.exe` 和 `tools\modavd.exe` 自己），和 AUTO-MAS 里的 ModAVD 一键更新做的是同一件事，用的也是同一个 `<根>\.update\` 目录和状态文件：哪边更新到一半被打断，另一边都能接着补完或退回。有自己更新设置的调用方（比如 AUTO-MAS）可以每次用 `--source`、`--cdk-dpapi` 传自己的更新源和 CDK，不必改管理器里的设置。
 
 - 只做明确要求的那一步，不自动联网、不在后台下载：
   - `modavd update`（`status`）只看本地；`check` 查最新版本；
   - `prepare` 下载、解包、按包里的 `modavd-manifest.json` 逐文件核对、暂存好，实例开着也行；
   - `install` 需要时先 `prepare`，再换上 `sdk\emulator` 和包里的其他文件。要先关掉所有实例、管理器窗口和 MCP 客户端，有程序在用就什么都不动（退出码 5），暂存的新版留着，下次直接换；
   - `recover` 补完或退回上次没做完的换上（每一步开始前也会先做）。
-- 更新源在管理器的「设置」里选：GitHub（`ModAVD/ModAVD` 的最新 Release，整包）或 Mirror 酱（填了 CDK 才能下载，能拿到增量包；出错时改从 GitHub 下，并在结果的 `notices` 里写明）。CDK 用 Windows DPAPI 加密存在 `%LOCALAPPDATA%\ModAVD\update-settings.json`，只有这个 Windows 用户能解开，不写日志、不出现在命令行和接口返回里。AUTO-MAS 自己的更新器用 AUTO-MAS 的设置。
+- 更新源在管理器的「设置」里选：GitHub（`ModAVD/ModAVD` 的最新 Release，整包）或 Mirror 酱（填了 CDK 才能下载，能拿到增量包；出错时改从 GitHub 下，并在结果的 `notices` 里写明）。CDK 用 Windows DPAPI 加密存在 `%LOCALAPPDATA%\ModAVD\update-settings.json`，只有这个 Windows 用户能解开，不写日志、不出现在命令行和接口返回里。
+- 调用方传这一次的设置（`status`、`check`、`prepare`、`install` 都可以带，`recover` 不带；只盖过「设置」里的，不保存，`status` 等结果里的 `source`、`cdk_set` 是这次生效的）：
+  - `--source github|mirrorchyan`：这次用的更新源。
+  - `--cdk-dpapi <base64>`：这次用的 Mirror 酱 CDK。值是调用方用 Windows DPAPI 加密好的密文的 base64：`CryptProtectData` 加密 UTF-8 的 CDK，不带 entropy，当前用户或本机作用域都行。modavd 解开后按和「设置」一样的规则检查（去掉首尾空白后不超过 256 个字节，不含空格、制表符、换行和 `&?#=`）。不是 base64、解不开、格式不对都是 `invalid_argument`（退出码 2），错误里不带密文和 CDK；不是 Windows 是 `unsupported`。给空串（`--cdk-dpapi ""`，或只有空白）表示这次不用 CDK，「设置」里存了也不用。
+  - 密文和 CDK 都不进日志、错误、`.update\state.json` 和返回值。
+- 进度（`--json` 时）：每个进度事件在 stderr 上是一行日志，比平常多一个 `progress` 对象：`{"time":"…","level":"info","msg":"…","progress":{"stage":"downloading","percent":12.3,"done_bytes":123,"total_bytes":1000}}`。
+  - `stage` 是 `checking`（只有 `check` 有）、`downloading`、`extracting`、`verifying`、`installing`。
+  - `checking`、`extracting`、`verifying`、`installing` 开始时各一行，`percent` 为 -1、字节数为 0。
+  - `downloading` 没有这样的一行：进入下载阶段的第一行就带真实的 `percent` 和字节数，之后约 2 秒一行，下完那行一定有。
+  - `--quiet` 时不出（进度是 info 级）。不带 `--json` 时照旧是人看的文字。stdout 仍然只有最后一行结果。
 - 管理器「设置」里点「更新」：管理器先下载、核对、暂存好（这时实例照常用）；有别的程序在跑这个根目录的 modavd（比如 `modavd mcp`）或有实例正在新建，就一台都不关、提示先处理；再正常关掉所有在运行的实例，然后启动 `tools\modavd.exe update install --after-pid <管理器 pid> --reopen <管理器程序> [--reopen-arg 参数]...` 并退出。命令行等管理器退出、换上新版，把结果写进 `.update\manager-result.json`，再按原来的参数重新打开管理器，新管理器打开时提示更新结果。换不上也照样重新打开，下载好的新版留着，下次不用重下。命令行的输出在 `logs\modavd-update.log`。`--after-pid`、`--reopen`、`--reopen-arg` 只和 `install` 一起用，是给管理器用的。
 - macOS 的更新设置和组件下载源分别保存在 `~/Library/Application Support/ModAVD/update-settings.json` 和 `components-settings.json`。CDK 使用 AES-GCM 加密，随机包装密钥留在当前用户的 Keychain；钥匙串锁定或未授权时保存失败，不会降级为明文存储。复制设置文件到其他用户或设备不会同时转移密钥。
 - Apple Silicon 原生构建可用 `modavd update prepare --package /path/update.zip --sha256 <可信渠道取得的64位摘要>` 暂存本地包，再用 `modavd update install` 离线安装；`recover` 也可离线补完或恢复。包须符合 [macOS 更新包协议](internal/update/MACOS.md)，核对 ARM64 Mach-O、代码签名完整性、模式和符号链接，并保留至少 20 GiB 可用空间。签名核对不代表发布者身份可信，SHA256 必须独立取得。原生事务与 Windows/AUTO-MAS 状态隔离；尚无符合协议的 macOS 发布资产时，远端检查返回 `update_unavailable`。发布打包流程由后续阶段接入。

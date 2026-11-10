@@ -3,7 +3,6 @@
 package host
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 
@@ -41,9 +40,6 @@ func SharedMemoryExists(string) bool { return false }
 // GetCompressedFileSize calls GetCompressedFileSizeW for the Windows file.
 func GetCompressedFileSize(string) (uint64, error) { return 0, errUnsupported }
 
-// VolumeFileSystem calls GetVolumePathNameW + GetVolumeInformationW on Windows.
-func VolumeFileSystem(string) (string, error) { return "", errUnsupported }
-
 // MoveFileReplaceThrough calls MoveFileExW (REPLACE_EXISTING | WRITE_THROUGH).
 func MoveFileReplaceThrough(string, string) error { return errUnsupported }
 
@@ -53,13 +49,8 @@ func SetEmulatorWindowsVisible(uint32, bool) (int, error) { return 0, errUnsuppo
 // GetConsoleWindow calls the Windows GetConsoleWindow API.
 func GetConsoleWindow() uintptr { return 0 }
 
-// MessageBox calls MessageBoxW from Windows user32.
-func MessageBox(string) error { return errors.New("当前平台暂不支持消息框") }
-
 // OpenStableRead requires Windows file-sharing semantics.
 func OpenStableRead(string) (*os.File, error) { return nil, errUnsupported }
 
 // FileChangeStamp disables caching without a supported file identity API.
 func FileChangeStamp(*os.File) string { return "" }
-
-func InfoBox(string) error { return errors.New("当前平台暂不支持消息框") }

@@ -114,6 +114,9 @@ func (m *Manager) afterBoot(ctx context.Context, inst *avd.Instance, mode bootSe
 			m.Log.Infof("实例 %d 宿主调度: %s", i, note)
 		},
 		func() {
+			if !root.CurrentPlatform().Windows() {
+				return
+			}
 			// 2) screenshot shared memory: SHM_videmulator<port> only exists while streaming, and a static screen
 			//    stays black in it, so force one SurfaceFlinger repaint afterwards (1004 needs root)
 			if _, err := adb.Console(ctx, port, "screenrecord webrtc start", 10*time.Second); err != nil {
@@ -124,6 +127,10 @@ func (m *Manager) afterBoot(ctx context.Context, inst *avd.Instance, mode bootSe
 		func() {
 			// 3) disk and screenshot channel state into the log (write_cache is root-only)
 			wc := m.su(ctx, i, "cat /sys/block/vd*/queue/write_cache | sort -u", 0)
+			if !root.CurrentPlatform().Windows() {
+				m.Log.Infof("实例 %d 磁盘缓存: %s", i, orText(joinNonEmptyLines(wc.Out, " / "), "读不到"))
+				return
+			}
 			shm := "缺失"
 			if host.SharedMemoryExists(shmName(ports, i)) {
 				shm = "在"
@@ -219,6 +226,9 @@ func (m *Manager) afterBoot(ctx context.Context, inst *avd.Instance, mode bootSe
 				m.recheckHostIme(i, m.guestIO(ctx, i))
 			}
 		},
+		// 12) download disks (dldisk.go). After 11: the framework restart there remounts the shared storage, and a
+		//     disk mounted on it before would be gone with it
+		func() { m.setupDownloadDisk(ctx, i) },
 	}
 	for _, step := range steps {
 		if err := ctxErr(ctx); err != nil {
@@ -496,6 +506,10 @@ func parseWriteback(out string) (expire, writeback int, ok bool) {
 }
 
 func (m *Manager) setupBalloon(ctx context.Context, i int) {
+	if root.CurrentPlatform().MirrorOS == "macos" {
+		m.Log.Infof("实例 %d 当前 macOS 模拟器未启用空闲页上报气球", i)
+		return
+	}
 	const param = "/sys/module/page_reporting/parameters/page_reporting_order"
 	res := m.su(ctx, i, fmt.Sprintf("ls /sys/bus/virtio/drivers/virtio_balloon | grep -c virtio; echo %d > %s; cat %s",
 		balloonReportingOrder, param, param), 0)
@@ -563,8 +577,22 @@ func idlepollCap(cores, spare int) int {
 	return max(0, min(cores, spare))
 }
 
-// setupIdlepoll starts the watcher with at most limit busy loops per burst.
+// guestPollsItself: the guest booted with the _CST table of syncIOQemuArgs and registered acpi_idle (driver is the
+// content of /sys/devices/system/cpu/cpuidle/current_driver, "none" without the table). Its menu governor then
+// busy-waits on the CPU whose task waits for I/O, for as long as that pays.
+func guestPollsItself(driver string) bool {
+	return strings.TrimSpace(driver) == "acpi_idle"
+}
+
+// setupIdlepoll starts the watcher with at most limit busy loops per burst, unless the guest busy-waits by itself:
+// the loops then add nothing and keep every vCPU busy for the whole burst. 11-10, Arknights resource download on a
+// 6-vCPU instance with the table: 10.4-11.8 MiB/s and 6.0 host cores for qemu with the loops, 11.3-12.1 MiB/s and
+// 3.8 cores without.
 func (m *Manager) setupIdlepoll(ctx context.Context, i int, limit int) {
+	if guestPollsItself(m.shell(ctx, i, "cat /sys/devices/system/cpu/cpuidle/current_driver", 0).Out) {
+		m.Log.Infof("实例 %d 密集读写加速: 客体等读写时自己忙等（acpi_idle），不起忙等守护", i)
+		return
+	}
 	remote, ok := m.pushGuestScript(ctx, i, guest.IdlePoll)
 	if !ok {
 		return

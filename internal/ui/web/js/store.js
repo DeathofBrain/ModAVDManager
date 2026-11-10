@@ -8,6 +8,8 @@ export const S = {
   watch: new Set(), // job ids started from this window (toast when they finish)
   logs: [], // {time, level, msg, job_id}
   check: null, // CheckResult
+  checkIndex: undefined, // undefined: first instance; null: new-instance defaults; number: selected instance
+  checkTargetKey: '',
   checking: false,
   checkError: null,
   checkedAt: 0,
@@ -63,8 +65,21 @@ export function lastJob(i, running) {
   return best;
 }
 
-// The root cannot boot right now (the banner says why); 开机 would only fail.
-export const rootBlocked = () => !!S.check && S.check.ready === false;
+// Memory belongs to one boot's configuration and is checked freshly by Start.
+// Only common host/SDK failures may disable every instance's start button.
+export function rootBlocked() {
+  const c = S.check;
+  if (!c) return false;
+  if (typeof c.root_ready === 'boolean') return !c.root_ready;
+  const items = c.items || [];
+  return c.ready === false && (!items.length || items.some((x) => x.id !== 'memory' && x.blocking && x.ok !== true));
+}
+
+export function checkTarget() {
+  const instances = S.list?.instances || [];
+  const selected = S.checkIndex === null ? null : instance(S.checkIndex) || [...instances].sort((a, b) => a.index - b.index)[0];
+  return { index: selected?.index ?? null, memoryMB: selected?.config?.memory_mb || 6144, instance: selected };
+}
 
 export function runningCount() {
   let n = 0;

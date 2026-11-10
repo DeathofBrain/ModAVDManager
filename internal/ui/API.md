@@ -68,7 +68,7 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
 | POST | `/api/components/import-playstore` | `multipart/form-data`，文件字段 `file`，每个文件一个（1–8 个）：Google 官方的 Google Play 版镜像压缩包 `x86_64-34_r14.zip`，或者那五个文件本身（文件名都不限） | 202 `Job`（`kind` 是 `playstore-import`，根任务，`index` 为 `-1`）：「使用我自己的文件」。不下载、不问许可协议。服务端把上传存到临时文件夹，任务结束删掉；任务按大小认出每个文件，压缩包核对 Google 仓库清单的大小和 SHA-1，五个文件各自核对写死的大小和 SHA-256；结果是 `PlayStoreImportResult`。上传本身不对时立即回 400：不是 multipart 是 `usage`，没有 `file` 字段是 `usage`，空文件、超过 8 个、单个比压缩包还大是 `invalid_argument`。文件被拒收时任务以 `components_rejected` 失败，什么也不改，`details.reason`：`unknown_file`（大小既不是压缩包也不是五个文件之一）、`mismatch`（大小对上了、哈希对不上）、`incomplete`（只给了一部分，根目录里又没有其余的）；另一个补全或导入在跑是 409 `busy`；空间不够 422 `precheck_failed` |
 | POST | `/api/diag/collect` | `{out_dir?, stage_dir?, keep_stage?}` | 202 `Job`（`kind` 是 `collect-info`，根任务，`index` 为 `-1`） |
 | GET | `/api/diag/report-config` | | `{"text":"…"}` |
-| GET | `/api/check?refresh=1` | | `CheckResult`（要几秒：硬件加速检查和 Vulkan 探测） |
+| GET | `/api/check?index={i}&refresh=1` | 两个参数均可省略 | `CheckResult` 的原有字段，加 `instance_index`、`memory_mb`、`root_ready`（要几秒：硬件加速检查和 Vulkan 探测） |
 | GET | `/api/jobs` | | `{"jobs":[Job]}`，新的在前，最多 50 个 |
 | GET | `/api/jobs/{id}` | | `Job` |
 | POST | `/api/jobs/{id}/cancel` | | `Job` |
@@ -84,6 +84,7 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
 - 截图、输入、列应用、取 GSF ID 遇到实例没开机：409，code 是 `busy`。
 - `InstanceInfo` 带 `diagnostics: bool`，开启时带 `diagnostics_since`。PATCH 修改诊断时，`UpdateResult` 带 `diagnostics_cleanup: {files, bytes}`，只报实际删除量。关闭预览包含重新加入普通全根目录 1 GiB 池后需淘汰的其它普通实例旧日志；活跃文件不在预览和删除范围内。预览和提交之间现场可能变化，页面以提交结果为准。关闭部分失败时开关已保存为关，再次提交 `diagnostics: false` 会继续清理和客体恢复。
 - 诊断设置成功但宿主 logcat 由外部程序采集时，`UpdateResult.warnings` 说明未接管；不结束外部进程，也不等待它切换后才返回。前端显示该提示。
+- 电脑检查的 `index` 指定检查目标：读取该实例下次开机的 `config.memory_mb`，不存在回 404，`index` 为空、重复或编号无效时回 400 `invalid_argument`。不指定时按默认 6144 MB 检查，`instance_index` 为 `null`；指定时返回该编号。`memory_mb` 总是本次检查实际使用的内存。缓存按该内存值区分；修改实例内存后不会复用旧配置结果，`refresh=1` 同时重新执行硬件加速和图形检查。`ready` 包含本次内存检查，`root_ready` 只看内存以外的通用阻断项；macOS 无法确认的通用阻断项也视为未通过。某个检查目标内存不足不应禁用其他实例，开机时仍按目标实例实际内存重新预检。
 
 ### Job
 
@@ -190,6 +191,7 @@ Apple Silicon macOS 的组件下载/导入使用 API35 Google Play ARM64 r9，�
   - 0.3.0 及以前用的是 `ui-edge`，没带这些开关，可能已经登着用户的账户、同步进了收藏夹、历史、密码，所以换了新目录。
   - 新版打开窗口以后删掉旧的 `ui-edge`；还有 Edge 在用它（开着旧版管理器）时跳过，下次打开再删。删不掉只记日志，不影响打开。
 - 同一个根目录只开一个服务：再次双击时，把已有的窗口重新打开。
+- Apple Silicon macOS 默认用系统浏览器打开；`--chrome-window` 可改为 Chrome 应用窗口，使用 `~/Library/Application Support/ModAVD/ui-chrome` 独立配置，关闭同步和扩展。Chrome 不可用时回到默认浏览器。单实例锁和状态也在该用户的 `ModAVD` 目录，目录打开操作交给 Finder；根目录可以自动从外层的 `ModAVD.app` 定位。
 - 窗口关掉（Edge 进程退出，或者 60 秒内没有任何事件流连着）以后，等正在跑的任务做完，服务再退出。
   - Edge 进程在启动后 10 秒内就退出：当作把窗口交给了同一配置下已在运行的 Edge，不算关窗，之后按事件流规则判断。
   - 真正关窗后，5 秒内没有事件流连着就退出（有任务先等任务做完）。

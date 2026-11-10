@@ -206,6 +206,7 @@ func (u *Updater) nativeUpdate(ctx context.Context, install bool) (*Status, erro
 	if err := u.writeNativeState(ns); err != nil {
 		return u.finish(st), err
 	}
+	u.step("installing", "正在换上 macOS 新版")
 	if err := u.completeNativeSwap(ns, m); err != nil {
 		unlock() // recovery acquires the same start locks itself
 		msg, rerr := u.recoverNative()
