@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"modavd/internal/avd"
 	"modavd/internal/buildinfo"
 	"modavd/internal/components"
 	"modavd/internal/emu"
@@ -234,7 +236,8 @@ func (s *server) respondJob(w http.ResponseWriter) func(jobView, error) {
 }
 
 func (s *server) handleOpen(w http.ResponseWriter, r *http.Request) {
-	if !root.CurrentPlatform().Windows() {
+	platform := root.CurrentPlatform()
+	if !platform.Windows() && platform.MirrorOS != "macos" {
 		writeError(w, errs.New(errs.Unsupported, "当前平台暂不支持打开目录"))
 		return
 	}
@@ -284,7 +287,11 @@ func (s *server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.openPath(dir); err != nil {
-		writeError(w, errs.Wrap(errs.Internal, err, "在资源管理器里打开 "+dir+" 失败: "+err.Error()))
+		message := "在资源管理器里打开 "
+		if platform.MirrorOS == "macos" {
+			message = "在 Finder 里打开 "
+		}
+		writeError(w, errs.Wrap(errs.Internal, err, message+dir+" 失败: "+err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
@@ -481,7 +488,42 @@ func (s *server) handleReportConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
-	refresh := r.URL.Query().Get("refresh") == "1"
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, errs.New(errs.InvalidArgument, "检查参数不合法"))
+		return
+	}
+	refresh := query.Get("refresh") == "1"
+	var index *int
+	memoryMB := avd.DefaultMemoryMB
+	if values, provided := query["index"]; provided {
+		if len(values) != 1 {
+			writeError(w, errs.New(errs.InvalidArgument, "只能指定一个检查实例"))
+			return
+		}
+		i, err := parseIndex(values[0])
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		info, err := s.mgr.Info(r.Context(), i)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		index = &i
+		if info.Config.MemoryMB > 0 {
+			memoryMB = info.Config.MemoryMB
+		}
+	}
+	writeResult := func(res *emu.CheckResult) {
+		writeJSON(w, http.StatusOK, struct {
+			*emu.CheckResult
+			InstanceIndex *int `json:"instance_index"`
+			MemoryMB      int  `json:"memory_mb"`
+			RootReady     bool `json:"root_ready"`
+		}{res, index, memoryMB, res.RootReady()})
+	}
 	asked := time.Now()
 	c := &s.check
 	if err := c.lock(r.Context()); err != nil {
@@ -489,26 +531,28 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.unlock()
-	// a check that finished while this request waited is as fresh as one started for it
+	// A refresh may share a refresh that finished while it waited, but a normal
+	// check may have reused the hardware probes' caches.
 	c.mu.Lock()
-	cached, cachedAt := c.res, c.at
+	cached, cachedAt, cachedMemoryMB := c.res, c.at, c.memoryMB
+	cachedRefreshed := c.refreshed
 	generation := c.generation
 	c.mu.Unlock()
-	if cached != nil && (!refresh || cachedAt.After(asked)) {
-		writeJSON(w, http.StatusOK, cached)
+	if cached != nil && cachedMemoryMB == memoryMB && (!refresh || (cachedRefreshed && cachedAt.After(asked))) {
+		writeResult(cached)
 		return
 	}
-	res, err := s.mgr.Check(r.Context(), emu.CheckOptions{})
+	res, err := s.mgr.Check(r.Context(), emu.CheckOptions{MemoryMB: memoryMB, Refresh: refresh})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	c.mu.Lock()
 	if c.generation == generation {
-		c.res, c.at = res, time.Now()
+		c.res, c.at, c.memoryMB, c.refreshed = res, time.Now(), memoryMB, refresh
 	}
 	c.mu.Unlock()
-	writeJSON(w, http.StatusOK, res)
+	writeResult(res)
 }
 
 func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
