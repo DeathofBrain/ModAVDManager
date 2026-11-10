@@ -57,6 +57,9 @@ func Listeners() ([]Listener, error)             { return win.Listeners() }
 func ListenerPID(port int) (uint32, bool, error) { return win.ListenerPID(port) }
 func BusyPorts(ports []int) ([]int, error)       { return win.BusyPorts(ports) }
 
+// OddListenerState is the state other than LISTEN the listener table has shown for port, if any.
+func OddListenerState(port int) (uint32, bool) { return win.OddListenerState(port) }
+
 func SetAboveNormalPriority(p Process) error            { return win.SetAboveNormalPriority(p) }
 func SetAffinity(p Process, mask uint64) error          { return win.SetAffinity(p, mask) }
 func GetAffinity(p Process) (uint64, error)             { return win.GetAffinity(p) }
@@ -68,7 +71,6 @@ func AllocatedFileBytes(path string) (uint64, error)    { return win.GetCompress
 func ReplaceFileDurable(src, dst string) error          { return win.MoveFileReplaceThrough(src, dst) }
 func VolumeFileSystem(path string) (string, error)      { return win.VolumeFileSystem(path) }
 func MoveFileReplaceThrough(src, dst string) error      { return win.MoveFileReplaceThrough(src, dst) }
-func AvailableMemoryMB() (uint64, error)                { return win.AvailableMemoryMB() }
 func Protect(data, entropy []byte) ([]byte, error)      { return win.Protect(data, entropy) }
 func Unprotect(data, entropy []byte) ([]byte, error)    { return win.Unprotect(data, entropy) }
 func SetEmulatorWindowsVisible(pid uint32, visible bool) (int, error) {
