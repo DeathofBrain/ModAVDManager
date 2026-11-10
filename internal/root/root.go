@@ -342,7 +342,11 @@ func (r *Root) QemuHeadlessExe() string {
 
 // QemuImgExe is the SDK's qemu-img (disk info / compact), errs.NotReady when it is not installed.
 func (r *Root) QemuImgExe() (string, error) {
-	exe := filepath.Join(r.RuntimeSDK(), "emulator", "qemu-img.exe")
+	name := "qemu-img"
+	if CurrentPlatform().Windows() {
+		name += ".exe"
+	}
+	exe := filepath.Join(r.RuntimeSDK(), "emulator", name)
 	if fi, err := os.Stat(exe); err != nil || fi.IsDir() {
 		return exe, errs.Newf(errs.NotReady, "找不到 qemu-img: %s", exe).
 			WithAdvice("ModAVD 的模拟器组件不完整，请更新组件后再试")
