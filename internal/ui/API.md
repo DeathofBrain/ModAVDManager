@@ -24,7 +24,7 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
 | `busy`、`already_exists`、`port_conflict` | 409 |
 | `not_ready`、`precheck_failed`、`unsupported` | 422 |
 | `canceled` | 499 |
-| `launch_failed`、`update_unavailable`、`update_rejected`、`proxy_unavailable` | 502 |
+| `launch_failed`、`insufficient_memory`、`update_unavailable`、`update_rejected`、`proxy_unavailable` | 502 |
 | `timeout` | 504 |
 | 其余 | 500 |
 
@@ -48,6 +48,8 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
 | POST | `/api/instances/{i}/resume` | `{}` | 202 `Job`（`kind` 是 `create`）：重做新建失败的那台的初始化 |
 | POST | `/api/instances/{i}/playstore-install` | `{}` | 202 `Job`（`kind` 是 `playstore-install`）：把根目录里的五个文件装进这台实例（同 `modavd playstore <i> install`：放进执行桥的可写覆盖层、藏起占位应用、冷启动一次；关着的做完再关上，开着的照原来的方式开回来，要几分钟）；结果是 `PlayStoreResult`。开始前先检查，不行立即回错误、不开任务：根目录还没有五个文件（或文件不全、损坏）是 422 `not_ready`，`details.reason` 为 `playstore_files_missing`（页面引导去「补全组件」勾选或导入）；实例没有执行桥是 422 `not_ready`，`details.reason` 为 `no_bridge`；arm64 客体是 422 `unsupported`（`unsupported_guest`）；新建中 409 `busy`；不存在 404。任务里客体脚本发现系统不可写也是 `not_ready` / `no_bridge`。任务中途失败时客体脚本撤回这次放进去的文件；撤不干净（或脚本没说完就断了）的，实例的 `play_store_partial` 变成 `true`，页面同时给「补全」和「移除」。实例原来关着的，失败后也关上 |
 | POST | `/api/instances/{i}/playstore-uninstall` | `{}` | 202 `Job`（`kind` 是 `playstore-uninstall`）：从实例里移除商店（去掉 Google Play 装的更新、删掉五个文件、冷启动后恢复占位应用；同 `playstore <i> uninstall`）；结果是 `PlayStoreResult`。不要五个文件，也不检查执行桥；只装了一部分的实例也用它移除 |
+| POST | `/api/instances/{i}/gles32-on` | `{}` | 202 `Job`（`kind` 是 `gles32-on`）：实验功能，让实例把 `ro.opengles.version` 报成 196610（GLES 3.2），Google Play 就不会把清单里要求 GLES 3.2 的游戏判成不兼容（同 `modavd gles32 <i> on`）。只改报的版本，实际渲染仍是 3.1。在执行桥带来的可写系统镜像覆盖层里改 `/vendor/build.prop`，冷启动一次生效；关着的做完再关上，开着的照原来的方式开回来，要几分钟；冷启动后核对客体报的版本，对不上任务失败。结果是 `GLES32Result`。开始前先检查，不行立即回错误、不开任务：实例没有执行桥是 422 `not_ready`，`details.reason` 为 `gles32_no_bridge`；arm64 客体是 422 `unsupported`；新建中 409 `busy`；不存在 404。任务里客体脚本发现系统不可写也是 `not_ready` / `gles32_no_bridge`。开着时 `bridge <i> uninstall` 拒绝 |
+| POST | `/api/instances/{i}/gles32-off` | `{}` | 202 `Job`（`kind` 是 `gles32-off`）：去掉上面写进去的行，冷启动后实例改回报 3.1（同 `gles32 <i> off`）；结果是 `GLES32Result`。检查同 `gles32-on` |
 | GET | `/api/instances/{i}/playstore-gsfid` | | `{"index","decimal","hex"}`：开着的实例的 GSF ID（同 `modavd playstore <i> gsfid --json`；十进制是 GSF 记的，十六进制是同一个数，负数按补码），几秒钟。用来到 https://www.google.com/android/uncertified/ 登记。没开机（按最近的列表）或实例上有任务在跑是 409 `busy`；还没有 ID 是 422 `not_ready`，`details.reason` 为 `no_gsf_id`（开着网等一两分钟再试） |
 | POST | `/api/instances/{i}/input` | `{type:"tap", x, y}`（坐标是这台实例显示的像素（1280×720 或 1920×1080，竖屏时宽高对调））或 `{type:"key", key:"back"\|"home"\|"recents"}` | `{}` |
 | GET | `/api/instances/{i}/screenshot` | | `image/png`（`adb exec-out screencap -p`），`Cache-Control: no-store`；没开机回 409 |
@@ -74,6 +76,7 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
 | GET | `/api/update` | | `UpdateView`，见下（不联网） |
 | POST | `/api/update/check` | `{}` | `UpdateView`：按设置的更新源查最新版本（不带 CDK）；检查进行中回 409 `busy` |
 | POST | `/api/update/settings` | `{source?: "github"\|"mirrorchyan", cdk?: string}` | `UpdateView`；`cdk` 为 `""` 时清除，CDK 加密保存，从不返回 |
+| POST | `/api/update/apply` | `{}` | 202 `Job`（`kind` 是 `update`，根任务，`index` 为 `-1`）：更新这个根目录，见下「更新」；结果是 `{handoff, version, stopped, message}` |
 
 `{i}` 是实例编号（0–9，5 除外）。
 
@@ -91,11 +94,11 @@ HTTP 4xx / 5xx，体为 `{"error":{"code":"…","message":"…","advice":"…","
  "result":null,"error":null,"warnings":[]}
 ```
 
-- `kind`：`start` / `stop` / `install` / `create` / `components` / `collect-info` / `disk-info` / `disk-trim` / `disk-compact` / `playstore-install` / `playstore-uninstall` / `playstore-import`（0.3.0 起没有重启，也没有显示 / 隐藏窗口）。
+- `kind`：`start` / `stop` / `install` / `create` / `components` / `collect-info` / `disk-info` / `disk-trim` / `disk-compact` / `playstore-install` / `playstore-uninstall` / `playstore-import` / `gles32-on` / `gles32-off` / `update`（0.3.0 起没有重启，也没有显示 / 隐藏窗口）。
 - `state`：`running` / `done` / `failed` / `canceled`。
 - `progress.step`：开机用 emu 的 `launch` / `boot` / `tune` / `ime` / `first_boot` / `vulkan_fix` / `done`；关机（含等被取消的开机停下）是 `stop`，安装是 `install`，这两种做完是 `done`；磁盘任务进行中是 `disk_info` / `disk_trim` / `disk_compact`、做完是 `done`（进行中没有百分比，`total` 为 0，页面显示不定长进度条；做完 `done` = `total` = 1000）；装执行桥的每一轮是 `bridge`；商店的装、卸进行中是 `playstore-install` / `playstore-uninstall`（没有百分比）、做完是 `done`；导入时核对文件是 `verifying`、解压镜像是 `extracting`（`done` / `total` 是字节）；新建是 `create`、其中几次开机的上述各步（开机做完是 `setup`）、`create_stop`、`done`，几次开机合成一条不回退的进度。`total` 一律 1000。
 - 安装任务的 `result.apk` 是用户上传的文件名，不是服务端的临时路径（临时文件任务结束就删了）。
-- `progress` 在没有进度时为 `null`；`result` 是 `StartResult` / `StopResult` / `InstallResult` / `DiskInfoResult` / `DiskTrimResult` / `DiskCompactResult` / `InstanceInfo`（新建）/ `PlayStoreResult` / `PlayStoreImportResult`，没完成时为 `null`；`error` 失败时是错误对象，否则 `null`。
+- `progress` 在没有进度时为 `null`；`result` 是 `StartResult` / `StopResult` / `InstallResult` / `DiskInfoResult` / `DiskTrimResult` / `DiskCompactResult` / `InstanceInfo`（新建）/ `PlayStoreResult` / `PlayStoreImportResult` / `GLES32Result`，没完成时为 `null`；`error` 失败时是错误对象，否则 `null`。
 
 `DiskCompactResult` 保留非负的 `freed_bytes`。`before_on_disk_bytes` 和 `after_on_disk_bytes` 是整理前后宿主实际占用，新增的 `on_disk_delta_bytes` 等于后者减前者，正值表示占用增大。`skipped=true` 表示检查通过、预计收益不足，未重写原盘；此时前后占用相等、变化和释放量均为零。结果还包含 `reclaim_threshold_bytes` 和可省略的 `estimated_reclaimable_bytes`，详见 [整理预算与结果契约](../emu/COMPACT.md)。
 - 同一实例同时只能有一个任务在跑；第二个回 409 `busy`。**例外**：开机任务进行中可以发关机（和 emu 一致：开机中照样能关）。
@@ -115,7 +118,7 @@ event: log
 data: {"time":"…","level":"info|warn|error","msg":"…","job_id":"j12"}   不属于任务的消息 job_id 是 ""
 
 event: update
-data: <UpdateView>          检查、设置有变化时
+data: <UpdateView>          检查、设置有变化时，以及更新任务下载完以后
 
 event: proxy
 data: {"marks":[ProxyMark]} 按应用走代理的卡片标记，全量；连上时发一次（有过的话），之后有变化时
@@ -154,15 +157,29 @@ Apple Silicon macOS 的组件下载/导入使用 API35 Google Play ARM64 r9，�
 - `PlayStoreResult`（`playstore-install` / `playstore-uninstall` 任务的结果，同 `modavd playstore <i> … --json`）：`{"index","action","state","installed","files","restarted","stopped","warnings"}`；`state` 是做完后客体里的情况：`installed`、`absent` 或 `partial`（还有没放到位的 `.new` 也算 `partial`）。
 - `InstanceInfo.play_store`（bool）：这台实例装着商店（按 `mas-avd.json` 的记录，装成功后为 `true`，移除后 `false`；不问客体）。按钮据此显示「补全 Google Play 商店」或「移除 Google Play 商店」，装着时再加一项「复制 GSF ID」（开机后可用）；`bridge` 为 `off` 的实例装不了（会回 `no_bridge`）。
 - `InstanceInfo.play_store_partial`（bool）：上次补全中途失败、没能全部撤回（`mas-avd.json` 记的是 `"partial"`）。这时 `play_store` 为 `false`，页面「补全」和「移除」都给；`bridge <i> uninstall` 照样拒绝。
+
+### 报告 GLES 3.2（实验）
+
+有的游戏在清单里要求 GLES 3.2，Play 商店按 `ro.opengles.version` 把 ModAVD（报 3.1）判成不兼容。这个开关只把实例报的版本改成 3.2，实际渲染仍是 3.1：走 Vulkan 的游戏能用，真要 GLES 3.2 渲染的应用会装得上、打不开。默认关，按实例开；要执行桥（改的是它带来的可写系统镜像覆盖层）。
+
+- `GLES32Result`（`gles32-on` / `gles32-off` 任务的结果，同 `modavd gles32 <i> … --json`）：`{"index","action","state","enabled","prop","restarted","stopped","notes","warnings"}`；`state` 是做完后客体里的情况：`on`（行在，客体报 196610）、`off`（行不在，客体不报 196610），还有没冷启动完的 `pending-on` / `pending-off`；`prop` 是客体的 `ro.opengles.version`；`notes` 在实例装着 Play 商店时有一条：商店会记着旧的设备信息，要到 设置 → 应用 → Google Play 商店 → 存储 清除数据（账号不会退出）。
+- `InstanceInfo.gles32`（bool）：开关的记录（`mas-avd.json` 的 `gles32`；不问客体）。界面据此在「更多操作」里显示「开启 / 关闭报告 GLES 3.2（实验）」；`bridge` 为 `off` 的实例开不了（会回 `gles32_no_bridge`），已经开着的仍可关。
 - 页面选文件和装 APK 一样：`<input type="file">`（可多选），每个文件追加一个 `file` 字段，用 `FormData` 发 `multipart/form-data`。
 
 ### 更新 `UpdateView`
 
-`update.Status` 的全部字段（和 `modavd update --json` 的 `data` 相同：`root`、`updatable`、`not_updatable_reason`、`current_version`、`current_build`、`source`、`cdk_set`、`checked`、`check_error`、`latest_version`、`latest_source`、`update_available`、`required_automas`、`release_url`、`phase`、`prepared_version`、`last_result`、`recovered`、`updated`、`message`、`notices`），加上 `checking`、`checked_at`（RFC 3339，本次启动后没查过是 `""`）、`error`（上次检查的错误对象，没有是 `null`）、`install_by_cli`（现在恒为 `true`：管理器里不能安装，由 AUTO-MAS 调 `modavd update install`）。
+`update.Status` 的全部字段（和 `modavd update --json` 的 `data` 相同：`root`、`updatable`、`not_updatable_reason`、`current_version`、`current_build`、`source`、`cdk_set`、`checked`、`check_error`、`latest_version`、`latest_source`、`update_available`、`required_automas`、`release_url`、`phase`、`prepared_version`、`last_result`、`recovered`、`updated`、`message`、`notices`），加上 `checking`、`checked_at`（RFC 3339，本次启动后没查过是 `""`）、`error`（上次检查的错误对象，没有是 `null`）、`can_install`（可以试 `POST /api/update/apply`：管理器知道怎么重新打开自己）、`install_by_cli`（`can_install` 的反面：只能用命令行装）、`handoff`（上次点「更新」交给命令行以后命令行留下的结果 `{at, ok, updated, version, message, error: {code, message, advice} | null}`；这个管理器不是那次重新打开的、或者结果超过 30 分钟，是 `null`）。
 
-- 只有点「检查更新」才联网；没有自动检查。
-- 更新源和 CDK 是当前系统用户的设置，命令行更新时按它来。Windows 使用 `%LOCALAPPDATA%\ModAVD\update-settings.json` 和 DPAPI；macOS 使用 `~/Library/Application Support/ModAVD/update-settings.json`，CDK 的随机 AES-GCM 包装密钥保存在当前用户的 Keychain。钥匙串锁定或未授权时保存失败，不弹授权框，不保存明文密钥。
+- 只有点「检查更新」或「更新」才联网；没有自动检查。
+- 更新源和 CDK 是当前系统用户的设置，管理器和命令行更新时都按它来；AUTO-MAS 自己的更新器用 AUTO-MAS 的设置。Windows 使用 `%LOCALAPPDATA%\ModAVD\update-settings.json` 和 DPAPI；macOS 使用 `~/Library/Application Support/ModAVD/update-settings.json`，CDK 的随机 AES-GCM 包装密钥保存在当前用户的 Keychain。钥匙串锁定或未授权时保存失败，不弹授权框，不保存明文密钥。
+- 「更新」（`POST /api/update/apply`）：管理器不能在自己运行时换掉自己，所以分三步。
+  1. 任务（`kind` 是 `update`，根任务）先下载、按清单核对、暂存好新版（同 `modavd update prepare`，实例照常开着）；已经是最新就到此为止，结果 `handoff` 为 `false`。
+  2. 先查会让换包失败的情况，有就一台实例都不关、任务失败：别的进程在跑这个根目录的 `ModAVD.exe` 或 `tools\modavd.exe`（比如 `modavd mcp`）；有实例正在新建；暂存的版本不比装着的新（这时算已经是最新）。然后正常关掉所有在运行的实例（同 `stop --all`，但不取消正在新建的）。
+  3. 用 `host.StartOrphan` 启动根目录的 `tools\modavd.exe --root <根> --json update install --after-pid <管理器 pid> --reopen <管理器程序> --reopen-arg …`（输出追加到 `logs\modavd-update.log`）。半秒后它还在跑，任务才算成功，结果 `{handoff: true, version, stopped, message}`；从这时起别的任务一律回 409，约 1.5 秒后管理器退出。命令行等管理器退出，换上新版，把结果写进 `.update\manager-result.json`，再按原来的参数（`--root`，以及 `--port`、`--no-window`、`--dev`）重新打开管理器；新管理器启动时读走这份结果，放进 `handoff`。换不上（有程序占着等）也照样重新打开，暂存的新版留着，下次不用重下。
+- 管理器装的时候不带 AUTO-MAS 的版本检查（和人用命令行装一样），页面在 `required_automas` 不为空时提示用 AUTO-MAS 的先更新 AUTO-MAS。
+- 开始前就拒绝、不开任务（422）：不是 Windows，或者管理器不知道怎么重新打开自己（`unsupported`）；根目录没有 `tools\modavd.exe`，或者它的版本和管理器不一样（`not_ready`，旧版命令行不认这些选项）。有别的任务在跑时回 409 `busy`；更新任务在跑时，别的任务也回 409。
 - macOS 原生更新由 CLI 的 `update prepare/install --package ZIP --sha256 HEX` 选择本地签名包；暂存后可离线 `install/recover`。没有兼容的 `macos-arm64` 远端资产时，检查结果为 `update_unavailable`。界面不提供安装入口；包协议见 `internal/update/MACOS.md`。
+
 
 ## 生命周期
 

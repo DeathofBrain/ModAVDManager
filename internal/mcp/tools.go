@@ -150,11 +150,12 @@ func toolDefs() []*toolDef {
 
 		newTool("check_host", "Check host",
 			"Run the host checks a boot depends on: root path, components, emulator build, CPU acceleration, "+
-				"Vulkan driver, free disk and free memory. ready=false means a blocking check failed; each item "+
-				"says why and what to do. Can take up to a minute.",
+				"Vulkan driver and free disk. ready=false means a blocking check failed; each item says why and "+
+				"what to do. Can take up to a minute. Host memory is not checked: a boot the host cannot give the "+
+				"instance's memory fails with insufficient_memory.",
 			readOnly(), reflect.TypeFor[emu.CheckResult](), []prop{
 				{"memory_mb", false, map[string]any{"type": "integer", "minimum": 1, "default": avd.DefaultMemoryMB,
-					"description": "Instance memory in MB to judge free host memory against."}},
+					"description": "Ignored; kept so older callers still work (host memory is not checked)."}},
 				{"refresh", false, map[string]any{"type": "boolean", "default": false,
 					"description": "Run the acceleration check and the Vulkan probe again instead of using results " +
 						"cached by this server (acceleration 2 min, Vulkan 10 min)."}},
@@ -320,10 +321,10 @@ func toolDefs() []*toolDef {
 				"while it runs: stop it first). Sends progress notifications with a progressToken. Cancelling or "+
 				"reaching timeout_s only stops waiting: the emulator keeps booting, and calling start_instance "+
 				"again before the deadline in the error's advice (launch + max(timeout_s, %d s) + %d min) finishes "+
-				"that boot's setup, one-time steps included (first-boot setup, guest Vulkan fix). Mounting the "+
-				"Vulkan fix restarts zygote (every app ends), so it is mounted only while no app is in the "+
-				"foreground and no install_apk runs; otherwise setup_pending=true: call again before the deadline, "+
-				"or the next boot mounts it.",
+				"that boot's setup, one-time steps included (first-boot setup, guest library fixes: Vulkan driver, "+
+				"ARM translation layer). Mounting them restarts zygote (every app ends), so they are mounted only "+
+				"while no app is in the foreground and no install_apk runs; otherwise setup_pending=true: call "+
+				"again before the deadline, or the next boot mounts them.",
 				int(emu.DefaultBootTimeout/time.Second), int(emu.DefaultBootTimeout/time.Second),
 				int(emu.SetupMarkerGrace/time.Minute)),
 			mutating(false, true), reflect.TypeFor[emu.StartResult](), []prop{

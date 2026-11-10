@@ -17,23 +17,26 @@ async function harness() {
       return { id: 'j2', kind: 'stop', state: 'running', index: 3 };
     } } },
     'dom.js': Object.fromEntries(['h', 'icon', 'btn', 'ibtn', 'keyed', 'setText', 'attr'].map(k => [k, noop])),
-    'format.js': Object.fromEntries(['label', 'uptime', 'stripInst', 'pct', 'cfgText', 'quoted', 'dur', 'diskInfoText', 'diskTrimText', 'diskCompactText', 'playStoreText'].map(k => [k, noop])),
+    'format.js': Object.fromEntries(['label', 'uptime', 'stripInst', 'pct', 'cfgText', 'quoted', 'dur', 'diskInfoText', 'diskTrimText', 'diskCompactText', 'playStoreText', 'gles32Text'].map(k => [k, noop])),
     'ui.js': { toast: noop, toastError: e => { throw e; }, copyText: noop, openMenu: noop },
     'forms.js': { openSettings: noop, openDelete: noop },
     'proxy.js': { openProxy: noop, markOf: noop },
     'viewer.js': { openViewer: noop, openLogs: noop },
     'panels.js': { openActivity: noop, runCheck: noop },
     'playstore.js': { openPlayStore: noop, openGSFID: noop },
+    'gles32.js': { openGLES32: noop, GLES32_NOTE: '' },
   };
   async function load(name) {
     if (cache.has(name)) return cache.get(name);
     const values = stubs[name];
+    const text = values ? '' : await readFile(new URL(name, base), 'utf8');
+    // two modules importing this one while its file was read: one instance (the page's S is shared that way)
+    if (cache.has(name)) return cache.get(name);
     const mod = values
       ? new vm.SyntheticModule(Object.keys(values), function() {
         for (const [k, v] of Object.entries(values)) this.setExport(k, v);
       }, { context })
-      : new vm.SourceTextModule(await readFile(new URL(name, base), 'utf8') +
-        (name === 'cards.js' ? '\nexport { menuItems };' : ''), { context });
+      : new vm.SourceTextModule(text + (name === 'cards.js' ? '\nexport { menuItems };' : ''), { context });
     cache.set(name, mod);
     await mod.link(specifier => load(specifier.replace(/^\.\//, '')));
     return mod;
@@ -179,16 +182,19 @@ async function settingsHarness({ diagnostics = true, running = true, get, patch 
     'viewer.js': { openViewer: noop, openLogs: noop },
     'panels.js': { openActivity: noop },
     'playstore.js': { openPlayStore: noop, openGSFID: noop },
+    'gles32.js': { openGLES32: noop, GLES32_NOTE: '' },
   };
   async function load(name) {
     if (cache.has(name)) return cache.get(name);
     const values = stubs[name];
+    const text = values ? '' : await readFile(new URL(name, base), 'utf8');
+    // two modules importing this one while its file was read: one instance (the page's S is shared that way)
+    if (cache.has(name)) return cache.get(name);
     const mod = values
       ? new vm.SyntheticModule(Object.keys(values), function() {
         for (const [key, value] of Object.entries(values)) this.setExport(key, value);
       }, { context })
-      : new vm.SourceTextModule(await readFile(new URL(name, base), 'utf8') +
-        (name === 'cards.js' ? '\nexport { updateCard };' : ''), { context });
+      : new vm.SourceTextModule(text + (name === 'cards.js' ? '\nexport { updateCard };' : ''), { context });
     cache.set(name, mod);
     await mod.link(specifier => load(specifier.replace(/^\.\//, '')));
     return mod;

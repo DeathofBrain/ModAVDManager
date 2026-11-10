@@ -4,7 +4,7 @@
 
 <!-- README.md 和 README.en.md 逐节对应：改了其中一份，请在同一个 PR 里把另一份也改了。 -->
 
-[ModAVD（魔改 AVD）](https://github.com/ModAVD/ModAVD) 的管理程序：图形管理器 `ModAVD.exe`，以及命令行和 MCP 服务 `modavd.exe`。Go 写，只用标准库。目前只支持 Windows x64，平台相关的部分已经拆成平台层，其他平台的安排见 [ModAVD#27](https://github.com/ModAVD/ModAVD/issues/27)。
+[ModAVD](https://github.com/ModAVD/ModAVD) 的管理程序：图形管理器 `ModAVD.exe`，以及命令行和 MCP 服务 `modavd.exe`。Go 写，只用标准库。目前只支持 Windows x64，平台相关的部分已经拆成平台层，其他平台的安排见 [ModAVD#27](https://github.com/ModAVD/ModAVD/issues/27)。
 
 > **版本提示（`main` 与 Release）**：本文按仓库 `main` 的实现编写。当前 `main` 的版本是 `0.3.0`，最新独立 Release 是 `v0.1.0`（对应 ModAVD `0.36.0`），`v0.2.0` 已起草、还没发布；`0.2.0` 起的新建后台初始化、`update` 命令和退出码 9 都不在 `v0.1.0` 下载包里。使用已发布包时，请以对应 Release 的说明和包内版本为准。
 
@@ -47,7 +47,7 @@
 | `emu` | 开机、开机后调优、首次初始化、执行桥、关机、状态、电脑检查 | `manager.py`、`precheck.py` |
 | `adb` | 私有 adb server、重新登记、模拟器控制台 | `host.py` |
 | `win` | 进程、命令行、端口、脱离进程树的启动、文件锁 | `host.py`、`windows/process.py` |
-| `vkfix`、`apk`、`guest` | 客体 Vulkan 驱动补丁、APK 清单、推进客体的脚本 | `vulkanfix.py`、`res/avd/guest/` |
+| `vkfix`、`ndkfix`、`guestpatch`、`apk`、`guest` | 客体 Vulkan 驱动补丁、ARM 转译层补丁（WFE / WFI / SEV / SEVL 当 NOP）和这两个补丁的清单、APK 清单、推进客体的脚本 | `vulkanfix.py`、`res/avd/guest/` |
 | `cli`、`mcp`、`ui` | 命令行、MCP、管理器的 HTTP 服务和页面 | — |
 
 `internal/guest/scripts/*.sh` 和 AUTO-MAS `res/avd/guest/` 下的脚本是同一份，改的时候两边要一起改。
@@ -70,16 +70,19 @@ modavd [--root <目录>] [--json] [--quiet] [--verbose] <命令> [参数]
 | `stop <i> [--force] [--cancel-create]`、`stop --all [--force]` | 关机：前台开着应用时先按 HOME，等 2 秒让它保存；再 sync，让安卓正常关机（前台应用先收到暂停、停止），不成再 sync + kill；`--force` 是 sync + 强杀。新建中默认拒绝，`--cancel-create` 显式取消；`--all` 也关闭新建中的实例，结果标记 `interrupted_create: true` |
 | `bridge <i> install\|uninstall\|verify` | 装、卸、检查 arm64 执行桥；开机时会自动装，一般不用手动跑（见下） |
 | `playstore <i> install\|uninstall\|status` | 给实例补全、移除、查看 Google Play 商店（见下） |
+| `gles32 <i> on\|off\|status` | 实验功能：让实例报告 GLES 3.2（见下） |
 | `disk <i> trim` | 磁盘回收：在开着的实例里对数据盘触发一次 FITRIM；成功只表示触发请求已返回，不等待或确认客体回收完成；模拟器太旧、不支持回收时返回不支持（退出码 4） |
 | `disk <i> info` | 看数据盘的大小：逻辑大小、覆盖层在宿主上实际占的空间；关机且取得启动锁后才运行只读的 qcow2 元数据检查，给出已分配和估计可回收大小。整理中或锁不可用时，仅返回可读取的文件头、宿主占用和原因；不可读的数值省略，不修复镜像 |
 | `disk <i> compact` | 整理已关机实例的数据盘；预计收益不足时跳过重写；转换后先校验再原子替换，原盘在替换成功前不动；报告前后占用和增减；大盘预算可达数十小时，正常整理基本不会超时，停止请取消；仅支持 NTFS/ReFS，拒绝快照或重写空间不足，详见[预算与结果契约](internal/emu/COMPACT.md) |
-| `check [--memory M]` | 开机前的电脑检查 |
+| `check [--memory M]` | 开机前的电脑检查。不查内存（页面文件会补上物理内存的不足），`--memory` 留着兼容、不再起作用；真分不到内存时 `start` 报 `insufficient_memory`（退出码 10） |
 | `report-config [--no-clipboard]` | 复制电脑配置和开着实例里的游戏信息（只读） |
-| `collect-info [--out-dir D] [--stage-dir D] [--keep-stage] [--no-explorer]` | 收集问题信息并打包（只读）；ZIP 完成前的 Ctrl+C 返回 `canceled`，删除未完成 ZIP 并清理暂存目录；`--keep-stage` 则保留暂存目录并在错误中给出路径 |
+| `collect-info [--out-dir D] [--stage-dir D] [--keep-stage] [--no-explorer]` | 收集问题信息并打包（只读）。除模拟器日志外，还收管理器、开机守护和私有 adb server 的日志（`modavd-ui.log`、`modavd-bootwatch.log`、`adb-server.log` 及其 `.1`，各取最后 5 MB）、所有 adb.exe 进程和 adb server 日志（`%TEMP%\adb.log` 最后 2 MB）、Windows 保留的 TCP 端口（netsh），并指出本目录要用的端口有没有落在里面；ZIP 完成前的 Ctrl+C 返回 `canceled`，删除未完成 ZIP 并清理暂存目录；`--keep-stage` 则保留暂存目录并在错误中给出路径 |
 | `components [status]`、`components source [auto\|googledownloads_cn\|tencent\|google]`、`components fetch [--accept-license] [--mirror ID] [--mirror-url URL] [--keep-downloads] [--play-store]`、`components import-playstore <文件或文件夹>…` | 查看、选择或补全 Google 组件（adb 和系统镜像；见「补全 Google 组件」）；`--play-store`、`import-playstore` 补全可选的 Google Play 商店（见下） |
 | `window <i> show\|hide`、`install <i> <apk>`、`shell <i> <命令>`、`adb <i> -- <参数>` | 窗口、装 APK、客体命令、adb 透传 |
 | `update [status\|check\|prepare\|install\|recover] [--automas-version V]` | 更新根目录里的整个 ModAVD 包，按「设置」里的更新源（见「更新 ModAVD」） |
 | `servers`、`version`、`mcp`、`help [命令]` | |
+
+Apple Silicon macOS 支持 `report-config` 和 `collect-info`：读取硬件、macOS、HVF、Metal 和组件版本；游戏列表只向归属已确认的运行实例与现有私有 ADB 查询，不启动服务。问题包只收本目录的实例配置白名单和最多 8 份模拟器日志，每份最多 2 MiB、总文本最多 20 MiB，过滤常见凭据字段、路径和设备标识。macOS 不收截图、系统转储或其他应用日志；分享前请检查问题包。默认复制配置到剪贴板、用 Finder 显示问题包，自动化可用 `--no-clipboard` / `--no-explorer`。
 
 - `<i>` 写成 `3` 或 `mas_3`（0–9，5 除外）；内存写成 `6144`、`6144M` 或 `6G`，只有 3 / 4 / 5 / 6 GB 四档，核数 2 / 4 / 6，帧率 30 / 60。
 - 根目录：`--root`，没给就用环境变量 `MODAVD_ROOT`，再没有就用 `modavd.exe` 所在目录或它的上一级。
@@ -115,6 +118,14 @@ Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` 
 - `install` 中途失败（比如覆盖层空间不够）时，撤回这次放进去的文件（包括没放到位的 `.new`），恢复占位应用；替换了镜像自带文件的那几个和占位应用要下次冷启动后才完全恢复。撤不干净的，`status` 是 `partial`，实例记为只装了一部分，可以 `uninstall` 移除，也可以再 `install` 补全。
 - 设备没有通过 Play 保护机制认证。登录时提示未认证的，用 `playstore <i> gsfid`（管理器里实例「更多操作」的「复制 GSF ID」）取这台实例的 GSF ID，十进制和十六进制都给（`--json` 是 `decimal`、`hex`），到 <https://www.google.com/android/uncertified/> 登记。实例要开着；还没有 ID 时报 `not_ready`（`details.reason` 为 `no_gsf_id`），开着网等一两分钟再试。查 Play Integrity 的游戏多半过不了（镜像是 userdebug、测试密钥）。
 - 没装过商店的实例什么都不动，`mas-avd.json` 里也不多键。装上后记 `instances.<i>.playStore: true`，卸掉后是 `false`，装到一半撤不干净时是 `"partial"`；`info` / `list` 的 `play_store`（装上了）和 `play_store_partial`（只装了一部分）按这一项。
+
+**报告 GLES 3.2**（`gles32`，实验，ModAVD#131）：
+
+- 有的游戏在清单里要求 GLES 3.2，Play 商店按 `ro.opengles.version` 把 ModAVD（报 3.1）判成不兼容。`gles32 <i> on` 把实例报的版本改成 3.2（196610），让商店放行。**只改报的版本，实际渲染仍是 3.1**：走 Vulkan 的游戏能用，真要 GLES 3.2 渲染的应用会装得上、打不开。默认关，按实例开。
+- 要执行桥：改的是它带来的可写系统覆盖层里的 `/vendor/build.prop`，没有执行桥的报 `not_ready`（`details.reason` 为 `gles32_no_bridge`）。开着的实例不能 `bridge <i> uninstall`，要先 `gles32 <i> off`。
+- `on` / `off` 会冷启动一次，再核对实例报的版本，对不上就报错；原来关着的做完再关，开着的照原来的方式开回来。`status` 只读，实例要开着，给 `on`、`off`，或还没冷启动的 `pending-on` / `pending-off`。
+- 实例装着 Google Play 商店时，商店会记着旧的设备信息：到实例里 设置 → 应用 → Google Play 商店 → 存储，清除数据（账号不会退出），它才会按新版本重新判断兼容。
+- 记在 `instances.<i>.gles32`；`info` / `list` 的 `gles32` 按这一项。管理器里是实例「更多操作」的「开启 / 关闭报告 GLES 3.2（实验）」。
 
 **按应用走代理**（`proxy`）：
 
@@ -153,7 +164,7 @@ Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` 
   - 新字段 `creation`（`""` / `creating` / `failed`）、`creation_error`、`creation_log` 一直出现；状态记在 `mas-avd.json` 的 `instances.<i>.creationState` 等键里，做完就删掉。调用方（AUTO-MAS）认不出的 `status` 取值一律按忙处理。
   - 进度：命令行逐步打印到 stderr，每行带「新建中 NN%」；MCP 的 `create_instance` 发进度通知（带 progressToken 时）；管理器在卡片上显示「新建中 NN%」和进度条（别处发起的新建也显示），「更多」里可以取消新建，关掉窗口会在后台做完。
 
-**退出码**：0 成功，1 内部错误，2 用法或参数不对 / 没同意许可协议，3 实例不存在，4 根目录没就绪 / 检查没通过 / 不支持，5 实例忙 / 已存在 / 端口被占，6 超时，7 启动失败，8 已取消，9 更新或补全组件时查不了、下不成 / 下载没通过核对，或者按应用走代理的代理探测不到。`shell` 不带 `--json` 时是客体命令的退出码，`adb` 是 adb 的退出码；`bridge` 不带 `--json` 时，`install` 后没装上、`uninstall` 后还在都是 1，`verify` 是脚本的退出码。
+**退出码**：0 成功，1 内部错误，2 用法或参数不对 / 没同意许可协议，3 实例不存在，4 根目录没就绪 / 检查没通过 / 不支持，5 实例忙 / 已存在 / 端口被占，6 超时，7 启动失败，8 已取消，9 更新或补全组件时查不了、下不成 / 下载没通过核对，或者按应用走代理的代理探测不到，10 电脑内存不足、模拟器分不到实例的内存而退出（`insufficient_memory`）。`shell` 不带 `--json` 时是客体命令的退出码，`adb` 是 adb 的退出码；`bridge` 不带 `--json` 时，`install` 后没装上、`uninstall` 后还在都是 1，`verify` 是脚本的退出码。
 
 **约定**（和 AUTO-MAS 一致）：
 
@@ -165,7 +176,7 @@ Apple Silicon macOS 的下载与导入使用 Android 15 Google Play `arm64-v8a` 
   - 改之前先关掉这个根目录的所有实例。设了 `portBase` 的根目录不要加进 AUTO-MAS。
 - 模拟器、adb server、logcat 都经一个立即退出的中间进程拉起，不在 modavd 的进程树里：调用方结束 modavd（Ctrl+C、MCP 客户端断开）不会带走模拟器。
 - 宿主 logcat 由 `tools\modavd.exe` 的独立采集进程写入 `logs\logcat-mas_<i>-<时间>.txt`，启动命令或管理器退出后仍继续；这次开机的 qemu 退出后，采集进程主动结束自己的 adb 并退出。每满 256 MiB 在下一处换行切分，同一条 adb 输出流接着写新文件；关闭的分段每台留最新 10 份，并计入 `logs\` 的 1 GiB 清理上限，正在写的文件不计入。
-- 开机成功后，每台实例另有一个同样不在进程树里的开机守护，随 qemu 退出而结束。客体自己重启（qemu 没退）后，它补做开机调优和 Vulkan 补丁，绝不拉起新的模拟器。
+- 开机成功后，每台实例另有一个同样不在进程树里的开机守护，随 qemu 退出而结束。客体自己重启（qemu 没退）后，它补做开机调优和客体库补丁（Vulkan 驱动、ARM 转译层），绝不拉起新的模拟器。
 - 同一实例的开机、关机按 `<根>\avd\.mas_<i>.{start,boot,stop}.lock` 排队：开机等前一次开机和关机做完；关机可以打断正在开机的实例。
 
 **开机后调优里的宿主调度**：
@@ -248,18 +259,19 @@ claude mcp add --transport stdio --scope user modavd '--' D:\ModAVD\tools\modavd
 - 一个根目录只开一个服务，再双击只是把窗口重新打开；状态文件在 `%LOCALAPPDATA%\ModAVD\`，日志在 `<根>\logs\modavd-ui.log`。
 - 关掉窗口后，等正在跑的任务做完再退出。
 - 选项：`--root`、`--port`、`--no-window`（只起服务）、`--dev`（放出 `/dev/` 下的假后端，给页面调样式用）。
-- 前后端接口：`internal/ui/API.md`。页面在 `internal/ui/web/`，图标是同人图（见 `internal/ui/web/assets/README.md` 和 [NOTICE](NOTICE)），不随代码许可授权。
+- 前后端接口：`internal/ui/API.md`。页面在 `internal/ui/web/`，图标不随代码许可授权（见 `internal/ui/web/assets/README.md` 和 [NOTICE](NOTICE)）。
 
 ## 更新 ModAVD
 
-`modavd update` 更新根目录里的整个 ModAVD 包（模拟器、组件、脚本，也包括 `ModAVD.exe` 和 `tools\modavd.exe` 自己），和 AUTO-MAS 的「魔改 AVD 一键更新」做的是同一件事，用的也是同一个 `<根>\.update\` 目录和状态文件：哪边更新到一半被打断，另一边都能接着补完或退回。按当前对接约定，AUTO-MAS 目前保留自己的更新器；是否以及何时改成调用这个命令，由 AUTO-MAS 项目自己的维护决定，这不是本仓库已经交付的功能或承诺。
+`modavd update` 更新根目录里的整个 ModAVD 包（模拟器、组件、脚本，也包括 `ModAVD.exe` 和 `tools\modavd.exe` 自己），和 AUTO-MAS 里的 ModAVD 一键更新做的是同一件事，用的也是同一个 `<根>\.update\` 目录和状态文件：哪边更新到一半被打断，另一边都能接着补完或退回。按当前对接约定，AUTO-MAS 目前保留自己的更新器；是否以及何时改成调用这个命令，由 AUTO-MAS 项目自己的维护决定，这不是本仓库已经交付的功能或承诺。
 
 - 只做明确要求的那一步，不自动联网、不在后台下载：
   - `modavd update`（`status`）只看本地；`check` 查最新版本；
   - `prepare` 下载、解包、按包里的 `modavd-manifest.json` 逐文件核对、暂存好，实例开着也行；
   - `install` 需要时先 `prepare`，再换上 `sdk\emulator` 和包里的其他文件。要先关掉所有实例、管理器窗口和 MCP 客户端，有程序在用就什么都不动（退出码 5），暂存的新版留着，下次直接换；
   - `recover` 补完或退回上次没做完的换上（每一步开始前也会先做）。
-- 更新源在管理器的「设置」里选：GitHub（`ModAVD/ModAVD` 的最新 Release，整包）或 Mirror 酱（填了 CDK 才能下载，能拿到增量包；出错时改从 GitHub 下，并在结果的 `notices` 里写明）。CDK 用 Windows DPAPI 加密存在 `%LOCALAPPDATA%\ModAVD\update-settings.json`，只有这个 Windows 用户能解开，不写日志、不出现在命令行和接口返回里。管理器里暂时只能改设置和检查更新，「更新」按钮不可用。
+- 更新源在管理器的「设置」里选：GitHub（`ModAVD/ModAVD` 的最新 Release，整包）或 Mirror 酱（填了 CDK 才能下载，能拿到增量包；出错时改从 GitHub 下，并在结果的 `notices` 里写明）。CDK 用 Windows DPAPI 加密存在 `%LOCALAPPDATA%\ModAVD\update-settings.json`，只有这个 Windows 用户能解开，不写日志、不出现在命令行和接口返回里。AUTO-MAS 自己的更新器用 AUTO-MAS 的设置。
+- 管理器「设置」里点「更新」：管理器先下载、核对、暂存好（这时实例照常用）；有别的程序在跑这个根目录的 modavd（比如 `modavd mcp`）或有实例正在新建，就一台都不关、提示先处理；再正常关掉所有在运行的实例，然后启动 `tools\modavd.exe update install --after-pid <管理器 pid> --reopen <管理器程序> [--reopen-arg 参数]...` 并退出。命令行等管理器退出、换上新版，把结果写进 `.update\manager-result.json`，再按原来的参数重新打开管理器，新管理器打开时提示更新结果。换不上也照样重新打开，下载好的新版留着，下次不用重下。命令行的输出在 `logs\modavd-update.log`。`--after-pid`、`--reopen`、`--reopen-arg` 只和 `install` 一起用，是给管理器用的。
 - macOS 的更新设置和组件下载源分别保存在 `~/Library/Application Support/ModAVD/update-settings.json` 和 `components-settings.json`。CDK 使用 AES-GCM 加密，随机包装密钥留在当前用户的 Keychain；钥匙串锁定或未授权时保存失败，不会降级为明文存储。复制设置文件到其他用户或设备不会同时转移密钥。
 - Apple Silicon 原生构建可用 `modavd update prepare --package /path/update.zip --sha256 <可信渠道取得的64位摘要>` 暂存本地包，再用 `modavd update install` 离线安装；`recover` 也可离线补完或恢复。包须符合 [macOS 更新包协议](internal/update/MACOS.md)，核对 ARM64 Mach-O、代码签名完整性、模式和符号链接，并保留至少 20 GiB 可用空间。签名核对不代表发布者身份可信，SHA256 必须独立取得。原生事务与 Windows/AUTO-MAS 状态隔离；尚无符合协议的 macOS 发布资产时，远端检查返回 `update_unavailable`。发布打包流程由后续阶段接入。
 - 只换包里的文件：`avd\`、`mas-avd.json`（只改 `components.emulator` 并记一条 `updateHistory`）、`sdk\platform-tools`、`sdk\system-images`、`logs\` 等一律不碰；`sdk\emulator` 整个换掉。根目录在 `mas-avd.json` 里设了 `sdkRoot` 的不更新。
@@ -295,6 +307,7 @@ pwsh -NoProfile -File build.ps1 -Out <目录> -Go <go1.26.5 的 go.exe>
 
 - 用哪个 go：`-Go`，没给就用环境变量 `MODAVD_GO`，再没有就用 PATH 上的 go。版本和 `go.mod` 的 `toolchain` 不一致就报错，不会悄悄换别的版本编。
 - `-trimpath -buildvcs=false`，不用 `-X` 写版本号：同一份源码在哪台机器、哪个目录编，结果都逐字节相同。
+- 不加 `-s -w`，exe 留着符号表；两个 exe 都带版本信息（产品名、说明、版本号），来自提交在仓库里的 `rsrc_windows_amd64.syso`（根目录一份给 `modavd.exe`，`cmd/modavd-gui/` 一份给 `ModAVD.exe`）。没签名、去了符号的 Go 程序最容易被杀毒软件的机器学习规则误报。改了 `internal/buildinfo` 的版本号、图标或清单，要跑 `go generate ./cmd/modavd-gui` 重新生成两份 syso 一起提交，没重新生成单测会失败。
 - 只用标准库，没有第三方依赖，离线（`GOPROXY=off`）也能编。
 - `.gitattributes` 让仓库里的文本文件一律 LF（图标等二进制文件除外）：`go:embed` 嵌的是工作区里的字节，换成 CRLF 编出来的 exe 就不一样了。
 
@@ -315,7 +328,7 @@ go test ./...
 | `MODAVD_TEST_LIVE` | 设成 `1` 才跑碰真实环境的测试：看本机正在运行的模拟器、起真的 adb server。会碰到本机正在用的实例，平时不要设。 |
 
 - `internal/avd`、`internal/root`、`internal/jsonord` 有一部分测试用 Python 3 运行 AUTO-MAS 的原始逻辑（如 `internal/avd/testdata/instances_ref.py`），和 Go 的输出逐字节对照，所以要装 Python 3。
-- 有几项测试只读本机 `D:\ModAVD` 下的现成文件（`mas-avd.json`、实例配置、组件 APK），没有就跳过；`MODAVD_TEST_METADATA` 可以另指一份 `mas-avd.json`，`MODAVD_TEST_SDK` 另指一个带 `platform-tools\adb.exe` 的 SDK，`MODAVD_TEST_VKLIBS` 指向放着原版和打过补丁的 `libvulkan_enc.so` 的目录（Vulkan 修复的逐字节对照）。
+- 有几项测试只读本机 `D:\ModAVD` 下的现成文件（`mas-avd.json`、实例配置、组件 APK），没有就跳过；`MODAVD_TEST_METADATA` 可以另指一份 `mas-avd.json`，`MODAVD_TEST_SDK` 另指一个带 `platform-tools\adb.exe` 的 SDK，`MODAVD_TEST_VKLIBS` 指向放着原版和打过补丁的 `libvulkan_enc.so` 的目录（Vulkan 修复的逐字节对照），`MODAVD_TEST_NDKLIBS` 指向放着镜像原版 `libndk_translation.so` 和补丁版 `libndk_translation.hintnop1.so` 的目录（ARM 转译层补丁的逐字节对照）。
 - CI（`.github/workflows/ci.yml`）在 `windows-2025` 上跑格式检查、`go vet`、`go test`、`build.ps1`、隐私扫描和作者检查；只在 PR 或手动触发时运行。
 
 ## 单独下载与哈希
@@ -342,6 +355,6 @@ go test ./...
 - 代码按 GNU Affero General Public License 第 3 版或更新版本发布（AGPL-3.0-or-later），见 [LICENSE](LICENSE)。Copyright 2026 qiyinxi。
 - 分发本程序（改没改都算），或者把改过的版本放到网上给别人用，都要按同样的许可证提供对应源码。别的程序只是调用 `modavd.exe`、MCP 服务或管理器的本地接口，不受影响。
 - 例外见 [NOTICE](NOTICE)：
-  - 程序图标（`cmd/modavd-gui/modavd.ico`、`cmd/modavd-gui/rsrc_windows_amd64.syso`、`internal/ui/web/assets/` 下的图片）是《明日方舟》艾雅法拉的同人图，角色版权归上海鹰角网络所有，不在本仓库的许可范围内；
+  - 程序图标（`cmd/modavd-gui/modavd.ico`、`cmd/modavd-gui/rsrc_windows_amd64.syso`、`internal/ui/web/assets/` 下的图片）是 ModAVD 自己的图标，不在本仓库的许可范围内；
   - `internal/avd/testdata/instances_ref.py` 复制自 AUTO-MAS（AGPL-3.0-or-later），只供测试、在单独的进程里运行，不编进程序。
 - 编出的 exe 含 Go 标准库和运行时（BSD-3-Clause）。

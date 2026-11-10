@@ -67,6 +67,9 @@ type InstanceInfo struct {
 	// PlayStorePartial: an install failed and could not take back all it put in (the record is "partial"); uninstall
 	// removes what is there, another install completes it.
 	PlayStorePartial bool `json:"play_store_partial"`
+	// GLES32: the guest is told to report OpenGL ES 3.2 (instances.<i>.gles32, set by `gles32 <i> on`; gles32.go).
+	// Read from that record only; `gles32 <i> status` asks the guest.
+	GLES32 bool `json:"gles32"`
 	// Creation is "creating" while create sets the instance up (its headless first boot), "failed" when that stopped
 	// (CreationError says why, CreationLog is that boot's log); "" for a ready instance. See crud.go.
 	Creation      string `json:"creation"`
@@ -224,10 +227,11 @@ type StartResult struct {
 	FirstBoot    bool    `json:"first_boot"`    // the one-time setup ran in this call
 	LogFile      string  `json:"log_file"`
 	LogcatFile   string  `json:"logcat_file"`
-	// ZygoteRestarted: the guest Vulkan fix was mounted, which restarts zygote (all apps start over).
+	// ZygoteRestarted: guest library fixes (Vulkan driver, ARM translation layer) were mounted, which restarts zygote
+	// (all apps start over).
 	ZygoteRestarted bool `json:"zygote_restarted"`
-	// SetupPending: this boot's one-time setup (the Vulkan fix mount) is still owed: an app was in the foreground or a
-	// guest job ran, and mounting restarts zygote. A later start of the same boot (before the marker expires) finishes
+	// SetupPending: this boot's one-time setup (mounting the guest library fixes) is still owed: an app was in the
+	// foreground or a guest job ran, and mounting restarts zygote. A later start of the same boot (before the marker expires) finishes
 	// it; otherwise the next boot does.
 	SetupPending bool     `json:"setup_pending"`
 	Warnings     []string `json:"warnings"` // never null; setup steps that failed (none of them stop the boot)
@@ -267,7 +271,7 @@ type StopResult struct {
 }
 
 // CheckItem is one host check (AUTO-MAS precheck.PrecheckItem). ID: path / components / emulator / acceleration /
-// vulkan / disk / memory; ports (modavd's own) only for a root whose mas-avd.json sets portBase.
+// vulkan / disk; ports (modavd's own) only for a root whose mas-avd.json sets portBase.
 type CheckItem struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
@@ -278,7 +282,7 @@ type CheckItem struct {
 }
 
 type CheckOptions struct {
-	// MemoryMB to judge host memory against (default avd.DefaultMemoryMB).
+	// MemoryMB is not used: host memory is not checked (check --memory and MCP memory_mb are still accepted).
 	MemoryMB int
 	// Refresh: run the acceleration check and the Vulkan probe again instead of using their cached results
 	// (AUTO-MAS run_prechecks(refresh=True), the "重新检查" button). Only long-running processes (MCP, the manager)

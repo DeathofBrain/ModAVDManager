@@ -77,9 +77,12 @@ var (
 	optCancelCreate  = flagSpec{"cancel-create", kindBool, "", "允许打断新建中的初始化，之后用 create --resume N 重做"}
 	optAll           = flagSpec{"all", kindBool, "", "同时关掉所有在运行的实例"}
 	optShellTO       = flagSpec{"timeout", kindInt, "秒", "命令最多执行多少秒（不给用默认值）"}
-	optCheckMB       = flagSpec{"memory", kindString, "M", "按这个实例内存判断电脑内存够不够（默认 6G）"}
+	optCheckMB       = flagSpec{"memory", kindString, "M", "不再起作用，留着兼容以前的调用（开机前不查内存）"}
 	optNoBridge      = flagSpec{"no-bridge", kindBool, "", "不装 arm64 执行桥，以后开机也不装（默认 modavd / 管理器开机时自动装上）"}
 	optAutoMAS       = flagSpec{"automas-version", kindString, "V", "调用方 AUTO-MAS 的版本（新版要求更高的 AUTO-MAS 时不装）"}
+	optAfterPID      = flagSpec{"after-pid", kindInt, "PID", "管理器用：先等这个进程退出（最多 60 秒）再装，只和 install 一起用"}
+	optReopen        = flagSpec{"reopen", kindString, "程序", "管理器用：装完（成不成都）把结果写进 .update\\manager-result.json，再启动这个程序（完整路径），只和 install 一起用"}
+	optReopenArg     = flagSpec{"reopen-arg", kindStrings, "参数", "管理器用：启动 --reopen 的程序时带的参数，按顺序，可以给多次"}
 	optBootNoBridge  = flagSpec{"no-bridge", kindBool, "",
 		"这次开机不自动装执行桥（实例有执行桥的开机标记、桥还没装时默认会装）"}
 	optAcceptLicense = flagSpec{"accept-license", kindBool, "",
@@ -124,7 +127,7 @@ func init() {
 		"status 列出这五个文件在不在、从哪来（download / import），不把它算进必需组件。" +
 		"不带参数时默认查看组件；source 查看或修改记住的下载源（auto、googledownloads_cn、tencent、google）。" +
 		"--json 时必须给 --accept-license（仅 fetch）。只有 Windows 有组件清单，darwin、linux 返回 unsupported。" +
-		"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是魔改 AVD 的文件夹是 4，" +
+		"退出码：没同意许可协议是 2（license_declined），路径有中文、空间不够、不是 ModAVD 的文件夹是 4，" +
 		"正在补全是 5，下不成是 9（components_unavailable），下载或解压后没通过校验、导入的文件被拒收也是 9（components_rejected，" +
 		"--json 的 error.details.reason 是 unknown_file、mismatch 或 incomplete）。"
 	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
@@ -198,7 +201,7 @@ func init() {
 				"带了 --window 或 --headless 而它不是这种方式，就报错（busy），不接管也不重启，要换先 stop 再 start；" +
 				"两个都不带就照它现在的方式接管。第一次开机还会做首次初始化。" +
 				"按 Ctrl+C 或 --timeout 到点都只是不再等：模拟器不会被结束，会接着开机。" +
-				"之后再运行一次 start 会接管它，把这次开机还没做完的设置补完（包括首次初始化和客体 Vulkan 修复）。" +
+				"之后再运行一次 start 会接管它，把这次开机还没做完的设置补完（包括首次初始化和客体库补丁）。" +
 				"实例已经在运行、设置也都做完时，只重做每次开机都做的设置。" +
 				"返回前确认 /sdcard 能写进文件（一般这时早已就绪，不多花时间；最多再等 60 秒，到点只警告）。" +
 				"实例还没有 arm64 执行桥时，设置做完后自动装上（中间关机再开机一两次）；--no-bridge 这次不装，" +
@@ -221,9 +224,10 @@ func init() {
 		},
 		{
 			name: "check", args: "[--memory M]", summary: "开机前的电脑检查",
-			details: "路径、组件、模拟器版本、硬件加速、Vulkan、磁盘、内存。没通过也返回 0：看 ready（--json）或结论那一行。",
-			flags:   []flagSpec{optCheckMB},
-			run:     runCheck, human: humanOf(formatCheck),
+			details: "路径、组件、模拟器版本、硬件加速、Vulkan、磁盘。没通过也返回 0：看 ready（--json）或结论那一行。" +
+				"不查内存：页面文件会补上物理内存的不足，真分不到内存时 start 报 insufficient_memory（退出码 10）。",
+			flags: []flagSpec{optCheckMB},
+			run:   runCheck, human: humanOf(formatCheck),
 		},
 		{
 			name: "report-config", args: "[--no-clipboard]", summary: "复制电脑配置和实例里装的游戏",
@@ -236,7 +240,7 @@ func init() {
 		{
 			name: "collect-info", args: "[--out-dir 目录] [--stage-dir 目录] [--keep-stage] [--no-explorer]",
 			summary: "收集问题信息，打成 zip",
-			details: "打成「魔改AVD问题信息-<时间>.zip」，默认放桌面，再打开资源管理器选中它（--no-explorer 不打开）。" +
+			details: "打成「ModAVD-问题信息-<时间>.zip」，默认放桌面，再打开资源管理器选中它（--no-explorer 不打开）。" +
 				"--stage-dir 是暂存目录的父目录（默认 %TEMP%），--keep-stage 保留暂存目录。每一节单独收，出错写进 summary.txt 接着收下一节。" +
 				"只读：不收磁盘镜像，不收 AUTO-MAS 的配置和账号数据，不起 adb server、不碰 5037。目前只支持 Windows。",
 			flags: []flagSpec{optOutDir, optStageDir, optKeepStage, optNoExplorer}, final: true,
@@ -283,6 +287,21 @@ func init() {
 			posNames: []string{"实例编号", "install、uninstall、status 或 gsfid"}, minPos: 2, maxPos: 2,
 			final: true,
 			run:   runPlayStore, human: humanPlayStore, exit: exitPlayStore,
+		},
+		{
+			name: "gles32", args: "<i> on|off|status", summary: "实验功能：让实例报告 GLES 3.2（只改报的版本）",
+			details: "实验功能。有的游戏在清单里要求 GLES 3.2，Play 商店按实例报的版本把 ModAVD（报 3.1）判成不兼容。" +
+				"on 把 ro.opengles.version 报成 196610（3.2），让商店放行；实际渲染仍是 3.1，走 Vulkan 的游戏能用，" +
+				"真要 GLES 3.2 渲染的应用会装得上、打不开。默认关，按实例开。" +
+				"做法是在执行桥带来的可写系统镜像覆盖层里改 /vendor/build.prop，所以实例要有执行桥；" +
+				"没有的报 not_ready（details.reason 为 gles32_no_bridge）。改完会冷启动一次才生效，再核对实例报的版本，对不上就报错。" +
+				"实例原来关着的，做完再关掉（没做成也关掉）；开着的，冷启动后照原来的方式开回来（带窗口或无头）。" +
+				"status：只读，实例要开着，on、off、pending-on、pending-off 四种（后两种是还没冷启动）。" +
+				"开着的实例不能卸执行桥，要先 off。装了 Google Play 商店的实例，商店会记着旧的设备信息：" +
+				"到 设置 → 应用 → Google Play 商店 → 存储，清除数据（账号不会退出）。list / info 里的 gles32 是开关的记录。",
+			posNames: []string{"实例编号", "on、off 或 status"}, minPos: 2, maxPos: 2,
+			final: true,
+			run:   runGLES32, human: humanOf(formatGLES32), exit: exitGLES32,
 		},
 		{
 			name: "disk", args: "<i> trim|info|compact", summary: "磁盘回收：触发回收或整理把客体已删文件占的空间还给宿主；看数据盘大小",
@@ -333,19 +352,21 @@ func init() {
 			run:     runVersion, human: humanOf(formatVersion),
 		},
 		{
-			name: "update", args: "[status|check|prepare|install|recover] [--automas-version V] [--package ZIP --sha256 HEX]",
+			name: "update", args: "[status|check|prepare|install|recover] [--automas-version V] [--package ZIP --sha256 HEX] [--after-pid PID --reopen 程序 [--reopen-arg 参数]...]",
 			summary: "更新这个根目录的 ModAVD 包（模拟器、组件、脚本和管理器）",
 			details: "按管理器「设置」里选的更新源（GitHub 或 Mirror 酱，Mirror 酱下载要填 CDK）。不自动联网，只做给出的那一步：" +
 				"status（默认）只看本地；check 查最新版本；prepare 下载、按清单核对、暂存好，实例开着也行；" +
 				"install 需要时先 prepare，再换上 sdk\\emulator 和包里的其他文件，要先关掉所有实例、管理器窗口和 MCP 客户端；" +
 				"recover 补完或退回上次没做完的换上。和 AUTO-MAS 用同一个 .update 目录，能接着对方没做完的做。" +
-				"--automas-version 是调用方 AUTO-MAS 的版本，新版要求更高的 AUTO-MAS 时不装。" +
+				"--after-pid、--reopen、--reopen-arg 是管理器「设置」里点「更新」时用的：管理器下载核对好、关掉实例后启动这条命令并退出，" +
+				"命令等它退出再换上新版，然后重新打开管理器。" +
 				"macOS 可用 --package ZIP --sha256 HEX 准备或安装本地完整签名包；摘要需从可信来源独立取得。" +
 				"查不了是退出码 9（update_unavailable），下载没通过核对也是 9（update_rejected），有程序在用是 5。",
 			posNames: []string{"status、check、prepare、install 或 recover"}, maxPos: 1,
 			flags: []flagSpec{optAutoMAS,
 				{name: "package", kind: kindString, arg: "ZIP", help: "macOS 本地完整更新包"},
-				{name: "sha256", kind: kindString, arg: "HEX", help: "本地更新包的独立可信 SHA-256"}}, final: true,
+				{name: "sha256", kind: kindString, arg: "HEX", help: "本地更新包的独立可信 SHA-256"},
+				optAfterPID, optReopen, optReopenArg}, final: true,
 			run: runUpdate, human: humanOf(formatUpdateStatus),
 		},
 		{
@@ -793,7 +814,7 @@ func stopAll(c *cmdCtx, m manager, opt emu.StopOptions) (*StopAllResult, error) 
 		c.log.Infof("没有正在运行的实例")
 		return res, nil
 	}
-	c.log.Infof("同时正常关闭 %d 台魔改 AVD 实例（安卓正常关机）：%s", len(targets), joinInts(targets, "、"))
+	c.log.Infof("同时正常关闭 %d 台 ModAVD 实例（安卓正常关机）：%s", len(targets), joinInts(targets, "、"))
 	type outcome struct {
 		r   *emu.StopResult
 		err error
@@ -818,7 +839,7 @@ func stopAll(c *cmdCtx, m manager, opt emu.StopOptions) (*StopAllResult, error) 
 			if c.ctx.Err() != nil && errs.CodeOf(e) != errs.Canceled {
 				e = errs.Wrap(errs.Canceled, e, "已取消")
 			}
-			c.log.Warnf("魔改 AVD 实例 %d 关机失败: %s", targets[k], errs.As(e).Error())
+			c.log.Warnf("ModAVD 实例 %d 关机失败: %s", targets[k], errs.As(e).Error())
 			res.Failed = append(res.Failed, StopFailure{Index: targets[k], Error: errorInfo(e)})
 			continue
 		}
@@ -921,7 +942,7 @@ func humanCollectInfo(w io.Writer, data any) {
 		fmt.Fprintln(w, l)
 	}
 	if !r.MasFound {
-		fmt.Fprintln(w, "没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志")
+		fmt.Fprintln(w, report.MasMissingNote)
 	}
 	if len(r.Problems) > 0 {
 		fmt.Fprintf(w, "有 %d 节没收集成功，原因写在 zip 里的 summary.txt，照样提交就行。\n", len(r.Problems))
@@ -1217,6 +1238,38 @@ func runPlayStore(c *cmdCtx) (any, error) {
 	return m.PlayStore(c.ctx, i, action)
 }
 
+func runGLES32(c *cmdCtx) (any, error) {
+	i, err := parseIndex(c.inv.pos[0])
+	if err != nil {
+		return nil, err
+	}
+	action := strings.ToLower(c.inv.pos[1])
+	switch action {
+	case "on", "off", "status":
+	default:
+		return nil, errs.Newf(errs.Usage, "第二个参数只能是 on、off 或 status，收到「%s」", c.inv.pos[1]).
+			WithAdvice(findCommand("gles32").usageAdvice())
+	}
+	m, err := c.mgr()
+	if err != nil {
+		return nil, err
+	}
+	return m.GLES32(c.ctx, i, action)
+}
+
+// exitGLES32: 1 when the switch did not end up as asked (on after on, off after off). status and --json: 0, the
+// result says it.
+func exitGLES32(data any, json bool) int {
+	r, ok := data.(*emu.GLES32Result)
+	if json || !ok {
+		return 0
+	}
+	if r.Action == "on" && r.State != "on" || r.Action == "off" && r.State != "off" {
+		return 1
+	}
+	return 0
+}
+
 func humanPlayStore(w io.Writer, data any) {
 	switch r := data.(type) {
 	case *emu.PlayStoreResult:
@@ -1390,6 +1443,19 @@ func runUpdate(c *cmdCtx) (any, error) {
 	if (c.inv.strOpt("package") != "" || c.inv.strOpt("sha256") != "") && action != "prepare" && action != "install" {
 		return nil, errs.New(errs.Usage, "--package 和 --sha256 只用于 update prepare 或 install")
 	}
+	afterPID, reopen, reopenArgs := c.inv.intOpt("after-pid"), c.inv.strOpt("reopen"), c.inv.strsOpt("reopen-arg")
+	handoff := afterPID != 0 || reopen != "" || len(reopenArgs) > 0
+	switch {
+	case handoff && action != "install":
+		return nil, errs.New(errs.Usage, "--after-pid、--reopen、--reopen-arg 只能和 install 一起用").
+			WithAdvice(findCommand("update").usageAdvice())
+	case afterPID < 0:
+		return nil, errs.Newf(errs.Usage, "--after-pid 要给进程号，收到 %d", afterPID)
+	case len(reopenArgs) > 0 && reopen == "":
+		return nil, errs.New(errs.Usage, "--reopen-arg 要和 --reopen 一起用")
+	case reopen != "" && !filepath.IsAbs(reopen):
+		return nil, errs.Newf(errs.Usage, "--reopen 要给程序的完整路径，收到「%s」", reopen)
+	}
 	r, err := c.deps.resolveRoot(c.inv.root)
 	if err != nil {
 		return nil, err
@@ -1410,11 +1476,44 @@ func runUpdate(c *cmdCtx) (any, error) {
 	case "prepare":
 		return u.Prepare(c.ctx)
 	case "install":
-		return u.Install(c.ctx)
+		if handoff {
+			return installHandoff(c, r, u, afterPID, reopen, reopenArgs)
+		}
+		return c.deps.updateInstall(c.ctx, u)
 	case "recover":
 		return u.Recover(c.ctx)
 	}
 	return u.Status(), nil
+}
+
+// installHandoff is `update install` for the manager's 更新 (update/handoff.go): wait for the manager (afterPID) to exit,
+// install, then, with reopen, leave the result for the manager and start it again whatever happened, so the user is
+// never left without a manager.
+func installHandoff(c *cmdCtx, r *root.Root, u *update.Updater, afterPID int, reopen string, args []string) (*update.Status, error) {
+	var st *update.Status
+	var err error
+	if afterPID > 0 {
+		c.log.Infof("等管理器（pid %d）退出", afterPID)
+		if !c.deps.waitExit(afterPID, update.AfterPIDWait) {
+			st = u.Status()
+			err = errs.Newf(errs.Busy, "管理器（pid %d）%d 秒内没有退出，新版没有换上", afterPID, int(update.AfterPIDWait/time.Second)).
+				WithAdvice("关掉管理器窗口后再在「设置」里点「更新」；下载好的新版留着，不用重新下载")
+		}
+	}
+	if err == nil {
+		st, err = c.deps.updateInstall(c.ctx, u)
+	}
+	if reopen != "" {
+		if serr := update.SaveHandoff(r, update.NewHandoffResult(st, err, time.Now())); serr != nil {
+			c.log.Warnf("写不了给管理器的更新结果: %v", serr)
+		}
+		if rerr := c.deps.reopen(reopen, args); rerr != nil {
+			c.log.Warnf("重新打开管理器（%s）失败: %v", reopen, rerr)
+		} else {
+			c.log.Infof("已重新打开管理器")
+		}
+	}
+	return st, err
 }
 
 func formatUpdateStatus(w io.Writer, r *update.Status) {

@@ -28,7 +28,7 @@ const adbServerStartTimeout = 20 * time.Second
 //   - -audio none and -feature -VirtioSndCard: no host sound and no guest sound card (the image's virtio-snd ignores
 //     hw.audio*); qemu CPU on the 1999 main screen 147% -> 104%;
 //   - -memory: the instance's own setting (avd.MemoryFor), hw.ramSize is left alone;
-//   - the balloon (free page reporting) is always on; QuickbootFileBacked has to be off for it, or the guest RAM is
+//   - the Windows balloon (free page reporting) is on; QuickbootFileBacked has to be off for it, or the guest RAM is
 //     a file mapping whose pages qemu cannot drop;
 //   - VulkanBatchedDescriptorSetUpdate: without it Endfield's render thread spent 67.5% in synchronous
 //     vkAllocateDescriptorSets round trips;
@@ -59,7 +59,7 @@ func buildLaunchArgs(avdName string, console, memoryMB int, headless bool) []str
 		// Silicon. -gpu host alone selects the older host GLES translation path.
 		args = append(args, "-feature", "GuestAngle,Vulkan")
 	}
-	return append(args,
+	args = append(args,
 		"-feature", "-QuickbootFileBacked",
 		"-feature", "-VirtioSndCard",
 		"-feature", "VulkanBatchedDescriptorSetUpdate",
@@ -69,8 +69,13 @@ func buildLaunchArgs(avdName string, console, memoryMB int, headless bool) []str
 		"-qemu",
 		"-global", "virtio-blk-device.write-cache=off",
 		"-global", "virtio-blk-device.config-wce=off",
-		"-device", "virtio-balloon-pci,free-page-reporting=on",
 	)
+	// Google's ARM64 QEMU does not implement ModAVD's custom balloon property.
+	// Keep the Windows argv byte-for-byte; native macOS has no reporting balloon.
+	if root.CurrentPlatform().MirrorOS != "macos" {
+		args = append(args, "-device", "virtio-balloon-pci,free-page-reporting=on")
+	}
+	return args
 }
 
 // launchPlan is what prepareLaunch settled before emulator.exe is started.
@@ -98,15 +103,15 @@ func (m *Manager) prepareLaunch(ctx context.Context, inst *avd.Instance, window 
 	ports := m.Root.Ports()
 	// The same-numbered instance of another root without a port plan of its own (production D:\ModAVD next to a test
 	// root that sets no portBase) runs on exactly our ports. Said before the host checks, which would otherwise fail
-	// first (it takes the memory) with a message that does not name the real cause.
+	// first with a message that does not name the real cause.
 	if p, where, found := m.otherRootInstance(ports, i); found {
 		return nil, otherRootBusy(i, p, where)
 	}
-	// the host check uses exactly the memory -memory passes below: the instance's own, not one guessed per game
-	memoryMB := avd.MemoryFor(m.Root, i)
-	if err := m.precheckBeforeLaunch(ctx, memoryMB); err != nil {
+	if err := m.precheckBeforeLaunch(ctx); err != nil {
 		return nil, err
 	}
+	// -memory is the instance's own setting, not one guessed per game
+	memoryMB := avd.MemoryFor(m.Root, i)
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
 	}
@@ -120,10 +125,10 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	port := m.Root.Ports().Console(i)
 	busy, err := host.BusyPorts([]int{port, port + 1, port + 2})
 	if err != nil {
-		return nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("魔改 AVD 实例 %d 读不出系统的 TCP 监听表: %v", i, err))
+		return nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("ModAVD 实例 %d 读不出系统的 TCP 监听表: %v", i, err))
 	}
 	if len(busy) > 0 {
-		return nil, errs.WithDetails(errs.Newf(errs.Busy, "魔改 AVD 实例 %d 要用的端口 %s 已被占用，请先关闭占用它们的程序",
+		return nil, errs.WithDetails(errs.Newf(errs.Busy, "ModAVD 实例 %d 要用的端口 %s 已被占用，请先关闭占用它们的程序",
 			i, joinInts(busy, ", ")), map[string]string{errs.Reason: "port_in_use"})
 	}
 
@@ -166,8 +171,12 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	if n, ok := inst.CPU(); ok {
 		cpu = strconv.Itoa(n)
 	}
-	m.Log.Infof("启动魔改 AVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，气球开，不带声卡，ANDROID_EMU_VK_HIDE_REBAR=%s）: emulator %s",
-		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, hideRebar, strings.Join(args, " "))
+	balloon := "气球开，"
+	if root.CurrentPlatform().MirrorOS == "macos" {
+		balloon = ""
+	}
+	m.Log.Infof("启动 ModAVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，%s不带声卡，ANDROID_EMU_VK_HIDE_REBAR=%s）: emulator %s",
+		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, balloon, hideRebar, strings.Join(args, " "))
 	return &launchPlan{args: args, logPath: logPath, memoryMB: memoryMB}, nil
 }
 
@@ -212,7 +221,7 @@ func otherRootQemu(q host.Process, cmdline []string, i, console int, ours func(h
 
 // otherRootBusy is the error of a start whose ports the same-numbered instance of another root holds.
 func otherRootBusy(i int, p host.Process, where string) *errs.Error {
-	return errs.WithDetails(errs.Newf(errs.Busy, "魔改 AVD 实例 %d 的端口被另一个根目录的同编号实例占用（pid %d，%s）", i, p.PID, where).
+	return errs.WithDetails(errs.Newf(errs.Busy, "ModAVD 实例 %d 的端口被另一个根目录的同编号实例占用（pid %d，%s）", i, p.PID, where).
 		WithAdvice("先在那个根目录把它关掉再启动"), map[string]string{errs.Reason: "port_other_root"})
 }
 
@@ -272,7 +281,7 @@ func (m *Manager) startEmulator(i int, plan *launchPlan) (host.Process, error) {
 	})
 	if err != nil {
 		return host.Process{}, errs.Wrap(errs.LaunchFailed, err,
-			fmt.Sprintf("魔改 AVD 实例 %d 启动失败（%s 没能运行）: %v", i, root.CurrentPlatform().Emulator, err))
+			fmt.Sprintf("ModAVD 实例 %d 启动失败（%s 没能运行）: %v", i, root.CurrentPlatform().Emulator, err))
 	}
 	return p, nil
 }
@@ -322,6 +331,37 @@ func logTail(path string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, " | ")
+}
+
+// emulatorMemoryMarkers are what the emulator writes before it quits for lack of host memory: util/oslib-win32.c and
+// oslib-posix.c (the guest RAM does not fit in what the host can still commit), exec.c (the guest RAM could not be set
+// up), qemu_oom_check and android/utils (any other allocation).
+var emulatorMemoryMarkers = []string{
+	"Insufficient RAM free for launching emulator",
+	"cannot set up guest memory",
+	"Failed to allocate memory",
+	"PANIC: not enough memory",
+}
+
+// bootOutOfMemory: the emulator log of this boot (a new file per boot) says the host could not give it memory.
+func bootOutOfMemory(logPath string) bool {
+	for _, marker := range emulatorMemoryMarkers {
+		if fileContains(logPath, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// emulatorExitedError is the error of a boot whose emulator.exe exited before qemu showed up (code: its exit code, or
+// "未知"): insufficient memory when its log says so (bootOutOfMemory), else launch failed. Host memory is not checked
+// before a boot, so this is where a boot that does not get its memory is told apart.
+func emulatorExitedError(i int, code, logPath string) error {
+	if bootOutOfMemory(logPath) {
+		return errs.Newf(errs.InsufficientMemory, "ModAVD 实例 %d 启动失败：电脑内存不足，模拟器分不到实例的内存（emulator.exe 退出码 %s）：%s",
+			i, code, logTail(logPath, 8)).WithAdvice("请关闭部分程序、调小实例内存，或调大虚拟内存（页面文件）")
+	}
+	return errs.Newf(errs.LaunchFailed, "ModAVD 实例 %d 启动失败（emulator.exe 退出码 %s）：%s", i, code, logTail(logPath, 8))
 }
 
 // fileContains reports whether the file holds needle (the emulator log's modavd_ime line).

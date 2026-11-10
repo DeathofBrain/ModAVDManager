@@ -8,7 +8,6 @@ package emu
 //   - components: platform tools and the system image (fetched by the manager's “补全组件” action or components fetch). Blocking.
 //   - emulator: only our own build from the ModAVD package, with Pkg.BuildId=mas-N >= MinModBuild. Blocking.
 //   - acceleration: emulator -accel-check (WHPX). Blocking.
-//   - memory: available host memory >= this boot's -memory + 1.5 GB. Blocking.
 //   - disk: free space on the instances' volume >= 8 GB (data disks are sparse and grow). Blocking.
 //   - vulkan: a child process loads vulkan-1.dll and lists the devices. Only a warning: without hardware Vulkan the
 //     emulator falls back to SwiftShader, boots and renders correctly, only slowly; the probe can also be wrong
@@ -28,7 +27,6 @@ import (
 	"time"
 
 	"modavd/internal/adb"
-	"modavd/internal/avd"
 	"modavd/internal/errs"
 	"modavd/internal/host"
 	"modavd/internal/root"
@@ -39,7 +37,7 @@ const (
 		"「Windows 虚拟机监控程序平台」，然后重启"
 	vulkanAdvice = "安装或更新显卡驱动（NVIDIA / AMD / Intel 官网驱动自带 Vulkan）。没有可用的显卡时模拟器只能" +
 		"软件渲染，游戏会占满 CPU，性能会很差"
-	testPackageAdvice = `请把魔改 AVD 内测包解压到这个目录（解压后目录里应有 sdk\emulator）`
+	testPackageAdvice = `请把 ModAVD 内测包解压到这个目录（解压后目录里应有 sdk\emulator）`
 
 	// How long a result of the same check is reused within one process (MCP server): AUTO-MAS
 	// _ACCEL_CACHE_SECONDS, VULKAN_PROBE_CACHE_SECONDS, VULKAN_PROBE_TIMEOUT_CACHE_SECONDS.
@@ -48,12 +46,8 @@ const (
 	vulkanTimeoutCacheFor = 60 * time.Second
 )
 
-// Check runs all host checks (path, components, emulator, acceleration, vulkan, disk, memory).
+// Check runs all host checks (path, components, emulator, acceleration, vulkan, disk).
 func (m *Manager) Check(ctx context.Context, opt CheckOptions) (*CheckResult, error) {
-	memoryMB := opt.MemoryMB
-	if memoryMB <= 0 {
-		memoryMB = avd.DefaultMemoryMB
-	}
 	comps := m.Root.Components()
 
 	// The two slow ones (a child process each) run side by side, like AUTO-MAS run_prechecks.
@@ -69,11 +63,10 @@ func (m *Manager) Check(ctx context.Context, opt CheckOptions) (*CheckResult, er
 	items := []CheckItem{
 		pathItem(m.Root.Dir),
 		componentsItem(comps, m.missingAdvice),
-		emulatorItem(m.emulatorFacts()),
+		platformEmulatorItem(m.emulatorFacts()),
 		accel,
 		vulkan,
 		m.diskItemNow(),
-		memoryItemNow(memoryMB),
 	}
 	items = append(items, m.platformCheckItems()...)
 	if it, ok := portsItem(m.Root.Ports(), m.Root.CheckPorts()); ok {
@@ -99,17 +92,17 @@ func ComponentStatuses(comps []root.ComponentStatus) []ComponentStatus {
 	return out
 }
 
-// precheckBeforeLaunch: the blocking checks before a boot (path, components, emulator, acceleration, memory against
-// memoryMB, disk), errs.PrecheckFailed / errs.NotReady for the first failing one; vulkan only warns. memoryMB must be
-// the -memory of this boot. Order and messages as AUTO-MAS check_before_launch.
-func (m *Manager) precheckBeforeLaunch(ctx context.Context, memoryMB int) error {
+// precheckBeforeLaunch: the blocking checks before a boot (path, components, emulator, acceleration, disk),
+// errs.PrecheckFailed / errs.NotReady for the first failing one; vulkan only warns. Order and messages as AUTO-MAS
+// check_before_launch. Host memory is not checked: the page file makes up for physical memory, so only the emulator
+// knows whether it gets the instance's memory, and a boot that does not is reported as such (bootOutOfMemory).
+func (m *Manager) precheckBeforeLaunch(ctx context.Context) error {
 	comps := m.Root.Components()
 	items := []CheckItem{
 		pathItem(m.Root.Dir),
 		componentsItem(comps, m.missingAdvice),
-		emulatorItem(m.emulatorFacts()),
+		platformEmulatorItem(m.emulatorFacts()),
 		m.accelerationItem(ctx, true),
-		memoryItemNow(memoryMB),
 		m.diskItemNow(),
 	}
 	items = append(items, m.platformCheckItems()...)
@@ -132,7 +125,7 @@ func (m *Manager) precheckBeforeLaunch(ctx context.Context, memoryMB int) error 
 		return err
 	}
 	if vulkan.OK != nil && !*vulkan.OK {
-		m.Log.Warnf("魔改 AVD 开机前检查：%s", itemMessage(vulkan))
+		m.Log.Warnf("ModAVD 开机前检查：%s", itemMessage(vulkan))
 	}
 	items = append(items, vulkan)
 	m.Log.Infof("%s", precheckSummary(items))
@@ -179,7 +172,7 @@ func precheckError(it CheckItem, missingErr func() error) error {
 	}
 }
 
-// precheckSummary is AUTO-MAS's one log line: "魔改 AVD 开机前检查：目录路径通过（<根目录>）；组件通过（...）；...".
+// precheckSummary is AUTO-MAS's one log line: "ModAVD 开机前检查：目录路径通过（<根目录>）；组件通过（...）；...".
 func precheckSummary(items []CheckItem) string {
 	parts := make([]string, len(items))
 	for k, it := range items {
@@ -192,7 +185,7 @@ func precheckSummary(items []CheckItem) string {
 		}
 		parts[k] = fmt.Sprintf("%s%s（%s）", it.Title, verdict, it.Reason)
 	}
-	return "魔改 AVD 开机前检查：" + strings.Join(parts, "；")
+	return "ModAVD 开机前检查：" + strings.Join(parts, "；")
 }
 
 func pathIsASCII(s string) bool {
@@ -300,6 +293,23 @@ func (m *Manager) emulatorFacts() emulatorFacts {
 	return f
 }
 
+// platformEmulatorItem keeps the Windows package contract unchanged. The macOS
+// lifecycle also supports the official ARM64 SDK emulator verified with API35;
+// other revisions require explicit validation before they can launch instances.
+func platformEmulatorItem(f emulatorFacts) CheckItem {
+	if root.CurrentPlatform().MirrorOS == "macos" && f.Present && !f.SelfBuilt {
+		ok := root.OfficialEmulatorVersionSupported(f.Version)
+		item := CheckItem{ID: "emulator", Title: "模拟器版本", OK: checkOK(ok), Blocking: true,
+			Reason: fmt.Sprintf("官方 ARM64 Emulator %s", f.Version)}
+		if !ok {
+			item.Reason = "当前官方 Emulator 版本尚未验证：" + f.Version
+			item.Advice = "macOS 当前支持官方 ARM64 Emulator 37.2.13 与 API35 arm64-v8a 镜像"
+		}
+		return item
+	}
+	return emulatorItem(f)
+}
+
 // emulatorItem: only the self-built emulator of the ModAVD package (user decision: Google's builds are not
 // supported), and its build must be new enough. Blocking.
 func emulatorItem(f emulatorFacts) CheckItem {
@@ -307,7 +317,7 @@ func emulatorItem(f emulatorFacts) CheckItem {
 	if !f.Present {
 		return CheckItem{
 			ID: "emulator", Title: title, OK: checkOK(false), Blocking: true,
-			Reason: "这个目录里还没有魔改 AVD 内测包", Advice: platformPackageAdvice(),
+			Reason: "这个目录里还没有 ModAVD 内测包", Advice: platformPackageAdvice(),
 		}
 	}
 	version := f.Version
@@ -317,7 +327,7 @@ func emulatorItem(f emulatorFacts) CheckItem {
 	if !f.SelfBuilt {
 		return CheckItem{
 			ID: "emulator", Title: title, OK: checkOK(false), Blocking: true,
-			Reason: fmt.Sprintf("这里的模拟器（%s）不是魔改 AVD 内测包里的版本，只支持内测包", version),
+			Reason: fmt.Sprintf("这里的模拟器（%s）不是 ModAVD 内测包里的版本，只支持内测包", version),
 			Advice: platformPackageAdvice(),
 		}
 	}
@@ -334,31 +344,8 @@ func emulatorItem(f emulatorFacts) CheckItem {
 	return CheckItem{
 		ID: "emulator", Title: title, OK: checkOK(false), Blocking: true,
 		Reason: fmt.Sprintf("内测包版本过旧（%s）", shown),
-		Advice: fmt.Sprintf("请把魔改 AVD 更新到 0.%d.0 或更新的版本，实例和游戏数据不受影响", root.MinModBuild),
+		Advice: fmt.Sprintf("请把 ModAVD 更新到 0.%d.0 或更新的版本，实例和游戏数据不受影响", root.MinModBuild),
 	}
-}
-
-// memoryItem: memoryMB is the -memory this boot passes (the instance's own setting).
-func memoryItem(memoryMB int, availableMB uint64, err error) CheckItem {
-	if err != nil {
-		return CheckItem{ID: "memory", Title: "内存", OK: nil, Blocking: true, Reason: fmt.Sprintf("查不了电脑可用内存: %v", err)}
-	}
-	needed := memoryMB + hostMemoryOverheadMB
-	text := fmt.Sprintf("实例内存 %.0f GB，启动约需 %.1f GB，当前可用 %.1f GB",
-		float64(memoryMB)/1024, float64(needed)/1024, float64(availableMB)/1024)
-	if availableMB >= uint64(needed) {
-		return CheckItem{ID: "memory", Title: "内存", OK: checkOK(true), Blocking: true, Reason: text}
-	}
-	return CheckItem{
-		ID: "memory", Title: "内存", OK: checkOK(false), Blocking: true,
-		Reason: "电脑可用内存不足：" + text,
-		Advice: "请关闭部分程序，或调小实例内存",
-	}
-}
-
-func memoryItemNow(memoryMB int) CheckItem {
-	avail, err := host.AvailableMemoryMB()
-	return memoryItem(memoryMB, avail, err)
 }
 
 // diskItem: free space of the volume holding <root>\avd (drive like `E:\`).
@@ -373,7 +360,7 @@ func diskItem(drive string, free uint64, err error) CheckItem {
 	return CheckItem{
 		ID: "disk", Title: "磁盘", OK: checkOK(false), Blocking: true,
 		Reason: fmt.Sprintf("%s，低于开机所需的 %d GB：数据盘随游戏写入增长，盘写满时实例数据会损坏", text, minFreeDiskGBToBoot),
-		Advice: fmt.Sprintf("清理 %s 的空间，或把魔改 AVD 根目录放到空间更大的盘", drive),
+		Advice: fmt.Sprintf("清理 %s 的空间，或把 ModAVD 根目录放到空间更大的盘", drive),
 	}
 }
 
@@ -443,11 +430,11 @@ func accelItem(res accelResult, summary string) CheckItem {
 	backend, advice := "Windows 虚拟机监控程序平台", accelAdvice
 	if runtime.GOOS == "darwin" {
 		backend = "Hypervisor.framework"
-		advice = "请在 Apple Silicon Mac 本机运行 macos-arm64 版魔改 AVD，确认模拟器带 com.apple.security.hypervisor 签名权限；用 emulator -accel-check 检查 HVF"
+		advice = "请在 Apple Silicon Mac 本机运行 macos-arm64 版 ModAVD，确认模拟器带 com.apple.security.hypervisor 签名权限；用 emulator -accel-check 检查 HVF"
 	}
 	return CheckItem{
 		ID: "acceleration", Title: "硬件虚拟化", OK: checkOK(false), Blocking: true,
-		Reason: fmt.Sprintf("硬件虚拟化（%s）不可用，魔改 AVD 无法启动（检查结果：%s）", backend, summary),
+		Reason: fmt.Sprintf("硬件虚拟化（%s）不可用，ModAVD 无法启动（检查结果：%s）", backend, summary),
 		Advice: advice,
 	}
 }
@@ -561,7 +548,7 @@ func accelOKText(summary string) string {
 
 func platformPackageAdvice() string {
 	if runtime.GOOS == "darwin" {
-		return "请把魔改 AVD 的 macos-arm64 内测包解压到这个目录（解压后应有 sdk/emulator）"
+		return "请把 ModAVD 的 macos-arm64 内测包解压到这个目录（解压后应有 sdk/emulator）"
 	}
 	return testPackageAdvice
 }

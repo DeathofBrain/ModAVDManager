@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"modavd/internal/errs"
 	"modavd/internal/logx"
 	"modavd/internal/root"
+	"modavd/internal/update"
 )
 
 // Options of Run.
@@ -50,8 +52,15 @@ type Options struct {
 	Ready func(baseURL, token string)
 	// IdleExit: exit after this long without any event stream connected; 0 = 60 s, negative = never.
 	IdleExit time.Duration
+	// Reopen is how the CLI starts this manager again after 设置 → 更新 swapped the new version in (update_apply.go);
+	// nil: the manager cannot update itself (更新 is refused, checking still works).
+	Reopen *Reopen
 
 	// Test hooks.
+	prepareUpdate  func(ctx context.Context, lg *logx.Logger, progress func(update.Progress)) (*update.Status, error)
+	cliVersion     func(exe string) (string, error)
+	programsInUse  func() ([]string, error)
+	spawn          func(exe string, args []string, logPath string) (alive func() bool, err error)
 	newBackend     func(log *logx.Logger) backend
 	newDiagBackend func(log *logx.Logger) diagBackend
 	token          string
@@ -113,11 +122,22 @@ type server struct {
 	check checkCache
 	upd   *updatePanel // update.go
 	marks *proxyMarks  // proxy.go
+
+	// 设置 → 更新 (update_apply.go): how we come back, the steps, and the exit the hand-off asks for
+	reopen        *Reopen
+	prepareUpdate func(ctx context.Context, lg *logx.Logger, progress func(update.Progress)) (*update.Status, error)
+	cliVersion    func(exe string) (string, error)
+	programsInUse func() ([]string, error)
+	spawn         func(exe string, args []string, logPath string) (alive func() bool, err error)
+	exitReq       chan struct{}
+	exitOnce      sync.Once
+	// handingOff: the CLI has taken the swap; no job may start any more (startJob), the manager is about to exit
+	handingOff atomic.Bool
 }
 
 func newServer(opt Options) (*server, error) {
 	if opt.Root == nil {
-		return nil, errs.New(errs.Usage, "没有指定魔改 AVD 根目录")
+		return nil, errs.New(errs.Usage, "没有指定 ModAVD 根目录")
 	}
 	lg := opt.Log
 	if lg == nil {
@@ -192,7 +212,29 @@ func newServer(opt Options) (*server, error) {
 	if opt.proxyEvery > 0 {
 		s.proxyEvery = opt.proxyEvery
 	}
-	s.upd = &updatePanel{}
+	s.upd = &updatePanel{handoff: update.TakeHandoff(opt.Root, time.Now())}
+	if h := s.upd.handoff; h != nil {
+		lg.Infof("上次在设置里点的更新：%s", h.Message)
+	}
+	s.reopen, s.prepareUpdate, s.cliVersion, s.programsInUse, s.spawn =
+		opt.Reopen, opt.prepareUpdate, opt.cliVersion, opt.programsInUse, opt.spawn
+	if s.programsInUse == nil {
+		r := opt.Root
+		s.programsInUse = func() ([]string, error) { return update.New(r, nil, update.Options{}).ProgramsInUse() }
+	}
+	if s.prepareUpdate == nil {
+		r := opt.Root
+		s.prepareUpdate = func(ctx context.Context, l *logx.Logger, progress func(update.Progress)) (*update.Status, error) {
+			return update.New(r, l, update.Options{Progress: progress}).Prepare(ctx)
+		}
+	}
+	if s.cliVersion == nil {
+		s.cliVersion = realCLIVersion
+	}
+	if s.spawn == nil {
+		s.spawn = realSpawn
+	}
+	s.exitReq = make(chan struct{})
 	s.mgr = newBackend(lg.Tee(s.eventLogSink("")))
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.jobCtx, s.jobCancel = context.WithCancel(context.Background())
@@ -291,6 +333,15 @@ func (s *server) waitForExit(ctx context.Context, w *Window) {
 		case <-ctx.Done():
 			if n := s.jobs.running(); n > 0 {
 				s.log.Warnf("管理器被要求退出，取消 %d 个正在跑的任务", n)
+				s.jobCancel()
+				s.jobs.waitIdle(jobDrainOnCancel)
+			}
+			return
+		case <-s.exitReq:
+			// 设置 → 更新 handed the swap to the CLI, which waits for us to exit. No job may start since (handingOff);
+			// one that slipped in before is cancelled and waited for, as when we are told to exit.
+			if n := s.jobs.running(); n > 0 {
+				s.log.Warnf("交给命令行更新后还有 %d 个任务在跑，取消", n)
 				s.jobCancel()
 				s.jobs.waitIdle(jobDrainOnCancel)
 			}

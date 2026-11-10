@@ -147,8 +147,9 @@ func (g *hookGroup) wait(timeout time.Duration) bool {
 }
 
 // Env is the environment for emulator.exe, adb servers and adb clients: ours plus ANDROID_SDK_ROOT and ANDROID_HOME =
-// RuntimeSDK, ANDROID_AVD_HOME = AvdHome, ANDROID_ADB_SERVER_PORT = AdbServerPort and root.NoLocalScanEnv. Keys are
-// replaced using the host's environment-key rules.
+// RuntimeSDK, ANDROID_AVD_HOME = AvdHome, ANDROID_ADB_SERVER_PORT = AdbServerPort, ANDROID_ADB_LOG_PATH =
+// ServerLogPath (also for a server an adb client starts by itself, such as the emulator's own adb commands at the end
+// of boot) and root.NoLocalScanEnv. Keys are replaced using the host's environment-key rules.
 func (c *Client) Env() []string {
 	sdk := c.Root.RuntimeSDK()
 	set := map[string]string{
@@ -156,6 +157,7 @@ func (c *Client) Env() []string {
 		"ANDROID_HOME":            sdk,
 		"ANDROID_AVD_HOME":        c.Root.AvdHome(),
 		"ANDROID_ADB_SERVER_PORT": strconv.Itoa(c.Root.AdbServerPort()),
+		"ANDROID_ADB_LOG_PATH":    ServerLogPath(c.Root),
 	}
 	for k, v := range root.NoLocalScanEnv {
 		set[k] = v
@@ -224,38 +226,108 @@ var (
 
 func (c *Client) portConflict(k serverKind, port int, pid uint32, name string) *errs.Error {
 	return errs.Newf(errs.PortConflict,
-		"魔改 AVD 的%s adb 端口 %d 被 %s（PID %d）占用，"+serverConflictReason+"。请在 %s 里把 %s 改成一个没被占用的端口"+
+		"ModAVD 的%s adb 端口 %d 被 %s（PID %d）占用，"+serverConflictReason+"。请在 %s 里把 %s 改成一个没被占用的端口"+
 			"（不能用 5037 和各实例的控制台 / adb / gRPC 端口，也不能和 %s 相同），或者先关掉占用它的程序",
 		k.label, port, name, pid, c.Root.MetadataPath(), k.key, k.otherKey)
 }
 
-// listener reports whether somebody listens on port, with its PID and process name ("" when unreadable). Reads the
-// system table only; connecting to an emulator's adb port would disturb it.
-func listener(port int) (up bool, pid uint32, name string, err error) {
-	pid, up, err = host.ListenerPID(port)
+// Whether an adb server listens on one of the root's server ports is asked of the port itself first (adbProbe,
+// Windows): host:version, what every adb command sends first anyway. An answer is an adb server, and that is all an
+// adb command needs; nothing accepting connections means none. The system's TCP listener table is read only when
+// something there does not answer like adb (to name who holds the port), and once per port to report what it shows
+// (noteTable). It used to be read first and believed: on two users' Windows 10.0.26300 it showed nothing on the
+// private server's port for half an hour while that server answered, served the emulator and collect-info, and every
+// adb command was refused before it was sent. Elsewhere (adbProbe gives probeSkip) the table and the platform's
+// ownership check decide, as before.
+
+// listener is what the system table says about port: whether somebody listens there, with its PID and process name
+// ("" when unreadable). A row in a state other than LISTEN counts (see win.parseTCPTable), said once.
+func (c *Client) listener(port int) (up bool, pid uint32, name string, err error) {
+	pid, up, err = listenerPID(port)
 	if err != nil {
 		return false, 0, "", errs.Wrap(errs.Internal, err, "读不出系统的 TCP 监听表: "+err.Error())
 	}
 	if !up {
 		return false, 0, "", nil
 	}
+	c.noteOddState(port)
 	if pid != 0 {
 		name = host.ProcessName(pid)
 	}
 	return true, pid, name, nil
 }
 
-func listening(port int) (bool, error) {
-	up, _, _, err := listener(port)
+// listening: an adb server (or, where no probe is made, anybody) listens on port.
+func (c *Client) listening(port int) (bool, error) {
+	switch adbProbe(port) {
+	case probeAdb:
+		c.noteTable(port)
+		return true, nil
+	case probeNone:
+		return false, nil
+	}
+	up, _, _, err := c.listener(port)
 	return up, err
 }
 
-// serverListening also verifies the native server's ownership. A busy port alone
-// must never authorize an adb client or an emulator registration.
+// listenerPID and oddListenerState are host's (variables for the tests).
+var (
+	listenerPID      = host.ListenerPID
+	oddListenerState = host.OddListenerState
+)
+
+// listenerNotes: what noteListener has said, by root, port and kind.
+var listenerNotes sync.Map
+
+// noteListener warns msg once per process for this root, port and kind.
+func (c *Client) noteListener(port int, kind, msg string) {
+	if _, said := listenerNotes.LoadOrStore(serverKey(c.Root, port)+"|"+kind, true); !said {
+		c.Log.Warnf("%s", msg)
+	}
+}
+
+// noteOddState says once that the table has shown port in a state other than LISTEN.
+func (c *Client) noteOddState(port int) {
+	if state, odd := oddListenerState(port); odd {
+		c.noteListener(port, "state", fmt.Sprintf(
+			"系统的 TCP 监听表里端口 %d 的状态值是 %d（不是 LISTEN 的 2），照样算在监听", port, state))
+	}
+}
+
+// noteTable reads the table once per process for a port whose adb server answered, and says what is wrong with it:
+// nothing there, or a state other than LISTEN. Only a report: the answer decided.
+func (c *Client) noteTable(port int) {
+	if _, done := listenerNotes.LoadOrStore(serverKey(c.Root, port)+"|checked", true); done {
+		return
+	}
+	if _, up, err := listenerPID(port); err == nil && !up {
+		c.noteListener(port, "missing", fmt.Sprintf(
+			"端口 %d 上的 adb server 在应答，系统的 TCP 监听表里却看不到它（这台电脑的监听表不可靠，不影响使用）", port))
+	}
+	c.noteOddState(port)
+}
+
+// serverListening: the root's adb server of kind k listens on port. Something else there is errs.PortConflict:
+// a busy port alone must never authorize an adb client or an emulator registration.
 func (c *Client) serverListening(k serverKind, port int) (bool, error) {
-	up, pid, name, err := listener(port)
-	if err != nil || !up {
-		return up, err
+	probe := adbProbe(port)
+	switch probe {
+	case probeAdb:
+		c.noteTable(port)
+		return true, nil
+	case probeNone:
+		return false, nil
+	}
+	up, pid, name, err := c.listener(port)
+	if err != nil {
+		return false, err
+	}
+	if probe == probeOther && !up {
+		// it accepts connections and does not answer like adb, and the table does not say whose it is
+		return false, c.portConflict(k, port, 0, "不认识的程序")
+	}
+	if !up {
+		return false, nil
 	}
 	if !serverBelongsTo(c.Root, port, pid, name) {
 		return false, c.portConflict(k, port, pid, name)
@@ -315,13 +387,15 @@ func (c *Client) ensure(ctx context.Context, k serverKind, port int, timeout tim
 	if up {
 		return true, nil
 	}
+	c.reportGoneServer(k, port)
 	if err := ctx.Err(); err != nil {
 		return false, canceled(ctx)
 	}
 	if err := prepareServerRoot(c.Root); err != nil {
 		return false, err
 	}
-	c.Log.Infof("启动魔改 AVD %s adb server（端口 %d）", k.label, port)
+	prepareServerLog(c.Root)
+	c.Log.Infof("启动 ModAVD %s adb server（端口 %d）", k.label, port)
 	// StartOrphan rather than StartDetached: an MCP client ends modavd's whole process tree when it disconnects, and
 	// while the start-server client (our child for ~2 s) is alive the server it forks is part of that tree. Losing
 	// the server is not harmless: the emulator registers with it only once, at boot. Without a configured orphan
@@ -329,10 +403,18 @@ func (c *Client) ensure(ctx context.Context, k serverKind, port int, timeout tim
 	client, err := host.StartOrphan(c.Root.AdbExe(), []string{"-P", strconv.Itoa(port), "start-server"},
 		host.StartOptions{Env: c.Env()})
 	if err != nil {
-		return false, errs.Wrap(errs.Internal, err, fmt.Sprintf("启动魔改 AVD %s adb server（端口 %d）失败: %s",
+		return false, errs.Wrap(errs.Internal, err, fmt.Sprintf("启动 ModAVD %s adb server（端口 %d）失败: %s",
 			k.label, port, errs.As(err).Message))
 	}
-	return c.waitListening(ctx, k, port, timeout, client)
+	up, err = c.waitListening(ctx, k, port, timeout, client)
+	switch {
+	case err != nil:
+	case up:
+		c.rememberServer(port)
+	case ctx.Err() == nil:
+		c.reportServerLog(k, port, timeout)
+	}
+	return up, err
 }
 
 // waitListening polls until port listens, at most timeout (AUTO-MAS _wait_listening). It does not wait for the
@@ -591,11 +673,30 @@ func consolePortOf(plan root.PortPlan, serial string) (int, bool) {
 // this root) and it is at least 60 s old; then get-state, Register, and up to 5 s of get-state == "device".
 // Serialized per serial within this process. Starts OnReregistered on success.
 func (c *Client) Reregister(ctx context.Context, serial string) bool {
+	return c.reregister(ctx, serial, false)
+}
+
+// RegisterBooted is Reregister for the boot wait once the emulator has reported Android booted (its
+// bootcompleted.ini is newer than its qemu): its one registration, at the end of boot, has happened, so a private
+// server that does not know serial now came up only after it or was restarted since, and nobody else will register
+// it. The caller holds the boot lock and knows the boot is over, so neither Booting(serial) nor the qemu age apply;
+// the private server must be listening already (nothing is started here).
+func (c *Client) RegisterBooted(ctx context.Context, serial string) bool {
+	if c.Root == nil {
+		return false
+	}
+	if up, err := c.serverListening(privateServer, c.Root.AdbServerPort()); err != nil || !up {
+		return false
+	}
+	return c.reregister(ctx, serial, true)
+}
+
+func (c *Client) reregister(ctx context.Context, serial string, booted bool) bool {
 	if c.Root == nil {
 		return false // no root, no instance of its own (QemuOnAdbPort says so too)
 	}
 	console, ok := consolePortOf(c.Root.Ports(), serial)
-	if !ok || (c.Booting != nil && c.Booting(serial)) {
+	if !ok || (!booted && c.Booting != nil && c.Booting(serial)) {
 		return false
 	}
 	qemu, ok := qemuOnAdbPort(c.Root, console)
@@ -603,7 +704,7 @@ func (c *Client) Reregister(ctx context.Context, serial string) bool {
 		return false
 	}
 	startedAt := qemu.StartedAt()
-	if startedAt.IsZero() || time.Since(startedAt) < reregisterMinQemuAge {
+	if !booted && (startedAt.IsZero() || time.Since(startedAt) < reregisterMinQemuAge) {
 		return false
 	}
 	lock := serialLock(serial)
