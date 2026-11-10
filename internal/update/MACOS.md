@@ -1,8 +1,8 @@
-# macOS update package contract
+# macOS 更新包约定
 
-Native Darwin/ARM64 builds use `modavd-macos-update-v1`, independently of the Windows/AUTO-MAS transaction format. Local packages are selected only by `update prepare` or `update install` with both `--package ZIP` and `--sha256 HEX`. Obtain that SHA256 through a trusted independent channel. Installation of a staged package and interrupted-transaction recovery need no network or saved credentials.
+原生 Darwin/ARM64 构建使用 `modavd-macos-update-v1`，与 Windows/AUTO-MAS 的事务格式相互独立。只有 `update prepare` 或 `update install` 可以选择本地更新包，而且必须同时指定 `--package ZIP` 和 `--sha256 HEX`。SHA256 摘要须从可信的独立渠道取得。安装已暂存的更新包、恢复中断的事务，都不需要联网或读取已保存的凭据。
 
-A ZIP contains `modavd-update-manifest.json` at its payload root, without an enclosing directory. The transport manifest is not installed. Its object has these fields:
+ZIP 根目录须直接包含 `modavd-update-manifest.json`，不得在外面再包一层目录。这份传输清单不会安装到目标目录。其 JSON 对象包含以下字段：
 
 ```json
 {
@@ -19,11 +19,11 @@ A ZIP contains `modavd-update-manifest.json` at its payload root, without an enc
 }
 ```
 
-The example is structural; it is not an installable inventory. Every non-directory payload entry must appear exactly once. File hashes cover bytes; symlink hashes cover the exact UTF-8 target bytes. Modes are decimal Unix permission bits (493 is 0755). Only ordinary files and symlinks are accepted. Directories are inferred. `xattrs` optionally maps the supported `com.apple.cs.*` signature attributes to base64 bytes; packaging must capture them when a signature uses them. Quarantine and unrelated attributes are not copied.
+以上示例仅展示结构，并非可直接安装的完整文件清单。除传输清单自身外，包内每个非目录条目都必须在清单中恰好出现一次。普通文件的摘要根据文件内容字节计算；符号链接的摘要根据链接目标字符串的原始 UTF-8 字节计算。权限使用十进制 Unix 权限位表示，例如 493 对应八进制 0755。只接受普通文件和符号链接，目录由条目路径推导。可选字段 `xattrs` 将受支持的 `com.apple.cs.*` 签名扩展属性映射为属性值的 base64 编码；签名使用这些属性时，打包必须保留。隔离属性和无关的扩展属性不会复制。
 
-The four units above are required. Other allowed unit names are explicitly listed in `nativeAllowedUnits`; guest data, root settings, platform-tools and system-images are never units. Paths must be normalized ASCII and case-unambiguous. Links must resolve entirely within their own unit, with no dangling targets, cycles or traversal through files. ZIP and manifest must agree on type, mode, size, hash and link target.
+上述四个更新单元均为必需项，其他允许的单元名称在 `nativeAllowedUnits` 中明确列出。客体数据、根目录设置、platform-tools 和 system-images 均不能作为更新单元。路径必须是规范化的 ASCII 路径，且不得存在大小写歧义。符号链接的整个解析过程必须保持在所属单元内，不得存在悬空目标、循环链接或穿过普通文件的路径。ZIP 内容与清单中的条目类型、权限、大小、摘要和链接目标必须一致。
 
-These ordinary files must contain ARM64 Mach-O code and have executable bits:
+以下入口必须是包含 ARM64 Mach-O 代码的普通文件，并设置可执行权限位：
 
 - `ModAVD.app/Contents/MacOS/ModAVD`
 - `tools/modavd`
@@ -32,10 +32,10 @@ These ordinary files must contain ARM64 Mach-O code and have executable bits:
 - `sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64`
 - `sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64-headless`
 
-The manager opens the system browser; no separate WebView helper is required. `ModAVD.app/Contents/Info.plist` must name `ModAVD` as `CFBundleExecutable`. `sdk/emulator/source.properties` must have `Pkg.BuildId=mas-<build>`, the headless QEMU binary must contain `free-page-reporting`, and the installed `modavd-manifest.json` version must match the transport version. Every Mach-O is checked with `codesign --verify --strict`; the app and emulator trees additionally use `--deep --strict`. This checks integrity, including ad hoc signatures; it does not authenticate a trusted publisher or notarization. Each verification process is time-bounded, and the verification pass has a total deadline.
+管理器打开系统浏览器，无须独立的 WebView 辅助程序。`ModAVD.app/Contents/Info.plist` 中的 `CFBundleExecutable` 必须为 `ModAVD`。`sdk/emulator/source.properties` 必须包含 `Pkg.BuildId=mas-<build>`，无界面 QEMU 二进制必须包含 `free-page-reporting`，随包安装的 `modavd-manifest.json` 中的版本必须与传输清单中的版本一致。每个 Mach-O 都使用 `codesign --verify --strict` 校验；应用和模拟器目录树还需使用 `--deep --strict` 校验。这些检查验证签名完整性，也接受 ad hoc 临时签名，但不证明发布者可信或已通过 Apple 公证。每个校验进程都有执行时限，整轮校验也有总时限。
 
-Limits are 20,000 ZIP entries, 4 GiB unpacked bytes, a 16 MiB transport manifest, 12 MiB encoded signature attributes, and a 1 MiB transaction journal. Writes retain at least 20 GiB free space and stop if free space cannot be determined. Local input is copied privately before digest verification and extraction. Staged content is hashed and signed code reverified before replacement; modification time alone is never trusted.
+各项上限为：20,000 个 ZIP 条目、4 GiB 解压后总量、16 MiB 传输清单、12 MiB 编码后的签名扩展属性，以及 1 MiB 事务日志。写入时必须保留至少 20 GiB 可用空间，无法确定剩余空间时停止操作。本地输入包先复制到更新器专用的临时文件，再校验摘要并解压。替换前会重新计算暂存内容的摘要，并重新校验代码签名，不会仅凭修改时间判断内容可信。
 
-Installation holds managed instance start locks and scans running executable paths under the SDK, app and tools. These checks are advisory on macOS: a program launched outside the manager can race them. Close all instances, manager windows and MCP clients first. The executing updater itself can replace its pathname while its original inode continues running. Each unit is journaled before/after renames; recovery verifies the complete candidate across staged and live units, then finishes it or restores originals. The metadata undo record restores this transaction's emulator version and history on rollback while preserving unrelated settings. Corrupt or ambiguous journals retain the scene for inspection.
+安装期间会持有受管理实例的启动锁，并扫描 SDK、应用和工具目录下正在运行的可执行文件路径。这些检查在 macOS 上属于协作式排他，管理器之外启动的程序仍可能与检查发生竞态。更新前须关闭所有实例、管理器窗口和 MCP 客户端。正在执行的更新器可以替换自身路径，原进程继续使用旧 inode 运行。每个单元重命名前后都会记录事务日志；恢复时，先校验由暂存区和当前安装目录中的单元共同组成的完整候选版本，再继续完成安装或还原原文件。回滚时，元数据撤销记录只恢复本事务修改的模拟器版本和更新历史，保留无关设置。遇到损坏或存在歧义的事务日志时，会保留现场供检查。
 
-Remote release selection uses `macos-arm64`, requires a SHA256 and full-package size, and refuses missing assets as `update_unavailable`. Publishing packages in this format, distribution signing and packaging-profile alignment belong to the later release-packaging stage.
+远端发布版本按 `macos-arm64` 选择资产，必须提供 SHA256 摘要和完整包大小；缺少兼容资产时返回 `update_unavailable`。按本格式发布更新包、分发签名和打包配置对齐，由后续发布打包阶段负责。
