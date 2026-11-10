@@ -43,7 +43,7 @@ var (
 const (
 	nativeTimeout   = 20 * time.Second // Invoke-Native -TimeoutSec default
 	accelTimeout    = 30 * time.Second
-	collectZipStart = "魔改AVD问题信息-"
+	collectZipStart = "ModAVD-问题信息-"
 )
 
 // CollectOptions for Collect; the first three are the script's -OutDir, -StageDir and -KeepStage.
@@ -86,8 +86,8 @@ type CollectResult struct {
 // Collect is collect-info.ps1: collects into a stage directory, writes summary.txt, zips the stage into OutDir and
 // opens Explorer on the zip. Read-only apart from the stage directory (its own, removed afterwards) and the zip.
 func Collect(ctx context.Context, r *root.Root, opt CollectOptions) (*CollectResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errs.New(errs.Unsupported, "收集问题信息目前只支持 Windows")
+	if !reportsAvailable {
+		return nil, errs.New(errs.Unsupported, "收集问题信息目前只支持 Windows 和 Apple Silicon macOS")
 	}
 	h := opt.Host
 	if h == nil {
@@ -95,6 +95,9 @@ func Collect(ctx context.Context, r *root.Root, opt CollectOptions) (*CollectRes
 		if h, err = newHost(); err != nil {
 			return nil, err
 		}
+	}
+	if native, ok := h.(nativeReporter); ok {
+		return native.collect(ctx, r, opt)
 	}
 	return collect(ctx, r.Dir, h, opt)
 }
@@ -238,9 +241,9 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (r
 	}()
 
 	c := &collector{ctx: ctx, root: rootDir, h: h, opt: opt, stage: stage, start: start, adbPort: root.DefaultAdbServerPort}
-	c.progress("魔改 AVD 问题信息收集")
+	c.progress("ModAVD 问题信息收集")
 	c.progress("ModAVD 目录：" + rootDir)
-	c.L("魔改 AVD 问题信息")
+	c.L("ModAVD 问题信息")
 	c.L(PrivacyNote)
 	c.L("生成时间：" + start.Format("2006-01-02 15:04:05 -07:00"))
 	// the script names the PowerShell that ran it here
@@ -260,7 +263,10 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (r
 	c.step("杀毒软件", c.antivirus)
 	c.step("实例列表与实例文件", c.instanceFiles)
 	c.step("正在运行的模拟器与 adb", c.runningAndAdb)
+	c.extra(sectionAdbProcesses, c.adbProcesses)
+	c.extra(sectionPortExcluded, c.portExclusions)
 	c.step("模拟器日志", c.emulatorLogs)
+	c.extra(sectionManagerLogs, c.managerLogFiles)
 	c.step("模拟器崩溃转储", c.crashDumps)
 	if err := c.diagnosticDumps(); err != nil {
 		msg := "诊断崩溃转储：" + errText(err)
@@ -293,7 +299,7 @@ func collect(ctx context.Context, rootDir string, h Host, opt CollectOptions) (r
 	}
 	if !c.masFound {
 		c.L("")
-		c.L("提示：没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志。")
+		c.L("提示：" + MasMissingNote)
 	}
 
 	res := &CollectResult{Stage: stage, Problems: append([]string{}, c.problems...), MasFound: c.masFound,
@@ -747,7 +753,7 @@ func (c *collector) runningAndAdb() error {
 		c.L(fmt.Sprintf("pid %d  启动于 %s", q.PID, ct))
 		cmd := q.CommandLine
 		if cmd == "" {
-			c.L("  qemu 命令行读不到（多半是 AUTO-MAS 以管理员运行），现场按 adb 设备列表推算")
+			c.L("  qemu 命令行读不到（多半是模拟器以管理员身份运行），现场按 adb 设备列表推算")
 			c.cmdlineUnreadable = true
 			continue
 		}
@@ -1458,7 +1464,7 @@ func (c *collector) autoMAS() error {
 		}
 	}
 	if loc == "" {
-		c.L("没找到 AUTO-MAS 安装目录，反馈时请附上 AUTO-MAS 的 debug 文件夹里的日志")
+		c.L("没找到 AUTO-MAS 安装目录（不用 AUTO-MAS 的不用管）")
 		return nil
 	}
 	c.masFound = true
@@ -1608,7 +1614,7 @@ func (c *collector) live() error {
 	targets := append([]liveTarget(nil), c.running...)
 	if c.cmdlineUnreadable {
 		// fallback: the emulator-<port> serials of the device list, mapped to instance names with the port plan
-		c.L("qemu 命令行读不到（多半是 AUTO-MAS 以管理员运行），现场按 adb 设备列表推算")
+		c.L("qemu 命令行读不到（多半是模拟器以管理员身份运行），现场按 adb 设备列表推算")
 		res := c.adbDevicesCommand()
 		if res.TimedOut {
 			c.L("  adb devices：超时（20 秒），已放弃")
@@ -1925,6 +1931,15 @@ func (c *collector) liveCommand(liveDir, name, serial, tag, kind string, args []
 // names relative to the stage with '/'. Disk images, snapshots, user data and AUTO-MAS config / data are never
 // staged; if one ever were, it is left out here too.
 func zipStage(ctx context.Context, dst, stage string) ([]string, error) {
+	return zipStageWithFile(ctx, dst, stage, nil)
+}
+
+// zipStageWithFile can retain an exclusively created archive handle throughout
+// publication. A supplied file is closed on every path, just like a created one.
+func zipStageWithFile(ctx context.Context, dst, stage string, opened *os.File) ([]string, error) {
+	if opened != nil {
+		defer opened.Close()
+	}
 	type item struct{ path, name string }
 	var files []item
 	queue := []item{{stage, ""}}
@@ -1959,10 +1974,15 @@ func zipStage(ctx context.Context, dst, stage string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f, err := os.Create(dst)
-	if err != nil {
-		return nil, err
+	f := opened
+	if f == nil {
+		var err error
+		f, err = os.Create(dst)
+		if err != nil {
+			return nil, err
+		}
 	}
+	var err error
 	zw := zip.NewWriter(f)
 	var names []string
 	for _, it := range files {

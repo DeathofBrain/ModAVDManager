@@ -5,13 +5,11 @@ package guest
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,17 +30,14 @@ const ProxyDaemonName = "modavd-proxyd"
 // ErrNoProxyDaemon: this modavd was built without build.ps1, so it carries no guest daemon.
 var ErrNoProxyDaemon = errors.New("这个 modavd 编的时候没带按应用走代理的客体程序（要用 build.ps1 编）")
 
-// ProxyDaemon is cmd/modavd-proxyd for linux/amd64, as build.ps1 embedded it.
+// ProxyDaemon is cmd/modavd-proxyd for linux/amd64, as build.ps1 embedded it. It is embedded as is, not compressed:
+// a large compressed blob inside an exe is what antivirus models take for a dropper's payload.
 func ProxyDaemon() ([]byte, error) {
-	z, err := proxyd.ReadFile("proxyd/" + ProxyDaemonName + ".gz")
+	b, err := proxyd.ReadFile("proxyd/" + ProxyDaemonName)
 	if err != nil {
 		return nil, ErrNoProxyDaemon
 	}
-	r, err := gzip.NewReader(bytes.NewReader(z))
-	if err != nil {
-		return nil, err
-	}
-	return io.ReadAll(r)
+	return b, nil
 }
 
 // LocalProxyDaemon is LocalFile for the daemon.
@@ -58,7 +53,11 @@ const (
 	CPUInfoBind  = "cpuinfo-bind.sh"
 	IdlePoll     = "mas-idlepoll.sh"
 	WifiFastpath = "mas-wifi-fastpath.sh"
-	VulkanFix    = "vulkanfix.sh"
+	// LibFix mounts the patched guest libraries, the Vulkan driver and the ARM translation layer (modavd only;
+	// AUTO-MAS keeps its own vulkanfix.sh for the Vulkan driver alone, with the same guest cache and upload names).
+	LibFix = "libfix.sh"
+	// GLES32 switches the OpenGL ES version the guest reports to 3.2 (modavd only, experimental, ModAVD/ModAVD#131).
+	GLES32 = "gles32.sh"
 	// PlayStore installs, checks and removes the Google Play Store (modavd only, not in AUTO-MAS).
 	PlayStore = "playstore.sh"
 )

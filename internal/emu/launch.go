@@ -28,7 +28,7 @@ const adbServerStartTimeout = 20 * time.Second
 //   - -audio none and -feature -VirtioSndCard: no host sound and no guest sound card (the image's virtio-snd ignores
 //     hw.audio*); qemu CPU on the 1999 main screen 147% -> 104%;
 //   - -memory: the instance's own setting (avd.MemoryFor), hw.ramSize is left alone;
-//   - the balloon (free page reporting) is always on; QuickbootFileBacked has to be off for it, or the guest RAM is
+//   - the Windows balloon (free page reporting) is on; QuickbootFileBacked has to be off for it, or the guest RAM is
 //     a file mapping whose pages qemu cannot drop;
 //   - VulkanBatchedDescriptorSetUpdate: without it Endfield's render thread spent 67.5% in synchronous
 //     vkAllocateDescriptorSets round trips;
@@ -59,7 +59,7 @@ func buildLaunchArgs(avdName string, console, memoryMB int, headless bool) []str
 		// Silicon. -gpu host alone selects the older host GLES translation path.
 		args = append(args, "-feature", "GuestAngle,Vulkan")
 	}
-	return append(args,
+	args = append(args,
 		"-feature", "-QuickbootFileBacked",
 		"-feature", "-VirtioSndCard",
 		"-feature", "VulkanBatchedDescriptorSetUpdate",
@@ -69,8 +69,13 @@ func buildLaunchArgs(avdName string, console, memoryMB int, headless bool) []str
 		"-qemu",
 		"-global", "virtio-blk-device.write-cache=off",
 		"-global", "virtio-blk-device.config-wce=off",
-		"-device", "virtio-balloon-pci,free-page-reporting=on",
 	)
+	// Google's ARM64 QEMU does not implement ModAVD's custom balloon property.
+	// Keep the Windows argv byte-for-byte; native macOS has no reporting balloon.
+	if root.CurrentPlatform().MirrorOS != "macos" {
+		args = append(args, "-device", "virtio-balloon-pci,free-page-reporting=on")
+	}
+	return args
 }
 
 // launchPlan is what prepareLaunch settled before emulator.exe is started.
@@ -120,10 +125,10 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	port := m.Root.Ports().Console(i)
 	busy, err := host.BusyPorts([]int{port, port + 1, port + 2})
 	if err != nil {
-		return nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("魔改 AVD 实例 %d 读不出系统的 TCP 监听表: %v", i, err))
+		return nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("ModAVD 实例 %d 读不出系统的 TCP 监听表: %v", i, err))
 	}
 	if len(busy) > 0 {
-		return nil, errs.WithDetails(errs.Newf(errs.Busy, "魔改 AVD 实例 %d 要用的端口 %s 已被占用，请先关闭占用它们的程序",
+		return nil, errs.WithDetails(errs.Newf(errs.Busy, "ModAVD 实例 %d 要用的端口 %s 已被占用，请先关闭占用它们的程序",
 			i, joinInts(busy, ", ")), map[string]string{errs.Reason: "port_in_use"})
 	}
 
@@ -166,8 +171,12 @@ func (m *Manager) launchPlanFor(ctx context.Context, inst *avd.Instance, memoryM
 	if n, ok := inst.CPU(); ok {
 		cpu = strconv.Itoa(n)
 	}
-	m.Log.Infof("启动魔改 AVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，气球开，不带声卡，ANDROID_EMU_VK_HIDE_REBAR=%s）: emulator %s",
-		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, hideRebar, strings.Join(args, " "))
+	balloon := "气球开，"
+	if root.CurrentPlatform().MirrorOS == "macos" {
+		balloon = ""
+	}
+	m.Log.Infof("启动 ModAVD 实例 %d（%s，%dp %d Hz，%d MB / %s 核，%s不带声卡，ANDROID_EMU_VK_HIDE_REBAR=%s）: emulator %s",
+		i, mode, inst.Resolution(), inst.FPS(), memoryMB, cpu, balloon, hideRebar, strings.Join(args, " "))
 	return &launchPlan{args: args, logPath: logPath, memoryMB: memoryMB}, nil
 }
 
@@ -212,7 +221,7 @@ func otherRootQemu(q host.Process, cmdline []string, i, console int, ours func(h
 
 // otherRootBusy is the error of a start whose ports the same-numbered instance of another root holds.
 func otherRootBusy(i int, p host.Process, where string) *errs.Error {
-	return errs.WithDetails(errs.Newf(errs.Busy, "魔改 AVD 实例 %d 的端口被另一个根目录的同编号实例占用（pid %d，%s）", i, p.PID, where).
+	return errs.WithDetails(errs.Newf(errs.Busy, "ModAVD 实例 %d 的端口被另一个根目录的同编号实例占用（pid %d，%s）", i, p.PID, where).
 		WithAdvice("先在那个根目录把它关掉再启动"), map[string]string{errs.Reason: "port_other_root"})
 }
 
@@ -272,7 +281,7 @@ func (m *Manager) startEmulator(i int, plan *launchPlan) (host.Process, error) {
 	})
 	if err != nil {
 		return host.Process{}, errs.Wrap(errs.LaunchFailed, err,
-			fmt.Sprintf("魔改 AVD 实例 %d 启动失败（%s 没能运行）: %v", i, root.CurrentPlatform().Emulator, err))
+			fmt.Sprintf("ModAVD 实例 %d 启动失败（%s 没能运行）: %v", i, root.CurrentPlatform().Emulator, err))
 	}
 	return p, nil
 }

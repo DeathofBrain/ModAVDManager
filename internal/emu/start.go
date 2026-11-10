@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"modavd/internal/adb"
 	"modavd/internal/avd"
 	"modavd/internal/errs"
 	"modavd/internal/host"
 	"modavd/internal/logx"
+	"modavd/internal/root"
 )
 
 // Progress values: one scale for the whole call so they only ever grow (MCP requires strictly increasing progress).
@@ -68,8 +71,8 @@ var startFindQemu = (*Manager).findQemu
 // for a stop of the same instance to finish first (otherwise it would take an instance that is shutting down for a
 // running one). A guest that is powering off without a stop of ours (the window's ×, AUTO-MAS's own close) is waited
 // for the same way: its qemu has to exit first, then the instance boots again (see guestShuttingDown). Already
-// running: no launch; the boot wait and the per-boot steps run again, the Vulkan fix is only checked (mounting it
-// restarts zygote and would end the apps running on it). On cancel the emulator is left running: ending qemu without
+// running: no launch; the boot wait and the per-boot steps run again, the guest library fixes are only checked
+// (mounting them restarts zygote and would end the apps running on it). On cancel the emulator is left running: ending qemu without
 // a guest shutdown is a power cut.
 //
 // Unlike AUTO-MAS (one long-running process), a start here can end before its setup is done: an MCP call cancelled,
@@ -78,15 +81,15 @@ var startFindQemu = (*Manager).findQemu
 // deadline (setupMarkerWindow after qemu started: the launching start's own boot timeout counts) does the setup as on
 // a fresh boot, and the error of the interrupted start names that deadline. The guest may be in use by then all the
 // same (AUTO-MAS adopted it and launched a game, an MCP client went on with shell / install_apk, a CLI user pressed
-// Ctrl+C on a slow start --window and started playing), so that start mounts the Vulkan fix (a zygote restart, ending
-// every app) only while no app is in the foreground and no install holds the guest lock; otherwise it leaves the
+// Ctrl+C on a slow start --window and started playing), so that start mounts the guest library fixes (a zygote
+// restart, ending every app) only while no app is in the foreground and no install holds the guest lock; otherwise it leaves the
 // marker, warns and reports SetupPending.
 //
 // A start that finishes records the guest boot it set up and leaves a boot watch on its qemu (bootwatch.go): when
 // the guest reboots on its own (qemu stays), the watch runs this start again, and so does any start that finds the
-// recorded boot_id changed. The per-boot steps then run again and the Vulkan fix is owed as above.
+// recorded boot_id changed. The per-boot steps then run again and the guest library fixes are owed as above.
 func (m *Manager) Start(ctx context.Context, i int, opt StartOptions) (*StartResult, error) {
-	if err := requireWindows(); err != nil {
+	if err := requireLifecycle(); err != nil {
 		return nil, err
 	}
 	t0 := time.Now()
@@ -224,7 +227,7 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 			}
 		}
 		if running {
-			m.Log.Infof("魔改 AVD 实例 %d 已在运行（pid %d）", i, p.PID)
+			m.Log.Infof("ModAVD 实例 %d 已在运行（pid %d）", i, p.PID)
 			prog.emit("launch", fmt.Sprintf("实例 %d 已在运行（pid %d），不重新开机", i, p.PID), progressLaunch)
 			adopted, adoptedAt = &p, time.Now()
 			mk, ok := m.readSetupMarker(i)
@@ -257,7 +260,7 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 				if d := mk.deadline(p); !d.IsZero() {
 					why = "接着做设置的期限 " + clockText(d, now) + " 已过"
 				}
-				m.Log.Infof("实例 %d 的开机设置标记已过期（%s），按已在运行的实例处理，客体 Vulkan 驱动补丁等下次开机再挂", i, why)
+				m.Log.Infof("实例 %d 的开机设置标记已过期（%s），按已在运行的实例处理，客体库补丁等下次开机再挂", i, why)
 				m.removeSetupMarker(i)
 			default:
 				// absent, unreadable or naming another process (that boot is over): an ordinary adopt
@@ -317,7 +320,7 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 		if relaunchAfterAdoptedGone(round, opt.watchQemu != nil, err, time.Since(adoptedAt), stopSeen) {
 			// Most likely a guest that was powering off and no longer answered adb, so guestShuttingDown could not
 			// tell: boot the instance as asked. Its setup marker, if any, names a boot that is over now.
-			m.Log.Infof("魔改 AVD 实例 %d 接管的模拟器（pid %d）没等安卓开机完成就退出了（多半是正在关机），重新开机",
+			m.Log.Infof("ModAVD 实例 %d 接管的模拟器（pid %d）没等安卓开机完成就退出了（多半是正在关机），重新开机",
 				i, adopted.PID)
 			continue
 		}
@@ -366,18 +369,19 @@ func (m *Manager) start(ctx context.Context, inst *avd.Instance, opt StartOption
 		return nil, owed(err)
 	}
 	qemu, gone := qemuAfterSetup(qemu, now, found)
-	// The setup is over (done, or its boot is gone), unless the Vulkan fix was left out because an app was in the
+	// The setup is over (done, or its boot is gone), unless a guest library fix was left out because an app was in the
 	// foreground or an install was running: the marker then stays, so a start after that (before its deadline) still
 	// mounts it.
 	if gone || !ab.SetupPending {
 		m.removeSetupMarker(i)
 	}
 	if gone {
-		return nil, errs.Newf(errs.LaunchFailed, "魔改 AVD 实例 %d 在开机后设置期间退出了（模拟器 pid %d）：%s", i,
+		return nil, errs.Newf(errs.LaunchFailed, "ModAVD 实例 %d 在开机后设置期间退出了（模拟器 pid %d）：%s", i,
 			qemu.PID, orText(logTail(res.LogFile, 8), "日志见 "+m.Root.LogsDir()))
 	}
 	// Callers write to /sdcard right after start (10-31 measurements): it is not there yet at sys.boot_completed,
-	// takes another 1–3 s to accept a new file after it is mounted, and the zygote restart of the Vulkan fix takes it
+	// takes another 1–3 s to accept a new file after it is mounted, and the zygote restart of the guest library fixes
+	// takes it
 	// away again for about 7 s. Usually ready long before the setup is done, so this costs nothing then.
 	if !m.waitSDCard(ctx, i) && ctx.Err() == nil {
 		m.Log.Warnf("实例 %d 开机后 /sdcard 在 %.0f 秒内一直写不进文件；先返回，稍后再写", i, sdcardMountWait.Seconds())
@@ -448,11 +452,13 @@ func (m *Manager) waitBoot(ctx context.Context, i int, timeout time.Duration, em
 	started := time.Now()
 	deadline := started.Add(timeout)
 	nextReport := started.Add(bootReportInterval)
+	// booted: when the emulator was first seen to report Android booted; lastRegister: the last RegisterBooted try
+	var booted, lastRegister time.Time
 	for {
 		if err := ctxErr(ctx); err != nil {
 			return host.Process{}, err
 		}
-		p, found, err := m.findQemu(i)
+		p, found, err := waitBootFindQemu(m, i)
 		if err != nil {
 			return host.Process{}, err
 		}
@@ -466,8 +472,30 @@ func (m *Manager) waitBoot(ctx context.Context, i int, timeout time.Duration, em
 		if err := ctxErr(ctx); err != nil {
 			return host.Process{}, err
 		}
+		// Android is up but adb does not answer: register the instance with a private server that came up (or was
+		// restarted) after the emulator's own registration, and stop waiting once that has not helped for a while.
+		if found {
+			if booted.IsZero() && emulatorReportedBoot(m.Root, i, p) {
+				booted = time.Now()
+				m.Log.Infof("实例 %d 的模拟器已报告安卓开机完成，等私有 adb 连上", i)
+			}
+			if !booted.IsZero() {
+				if time.Since(lastRegister) >= bootRegisterEvery {
+					lastRegister = time.Now()
+					if registerBooted(ctx, m, i) {
+						continue // ask getprop again right away
+					}
+				}
+				if time.Since(booted) >= adbAfterBootWait {
+					return host.Process{}, m.adbUnusableAfterBoot(i, booted)
+				}
+			}
+		}
 		if !time.Now().Before(deadline) {
-			return host.Process{}, errs.Newf(errs.Timeout, "魔改 AVD 实例 %d 启动超时（%.0f 秒内安卓没有启动完成），日志见 %s",
+			if !booted.IsZero() {
+				return host.Process{}, m.adbUnusableAfterBoot(i, booted)
+			}
+			return host.Process{}, errs.Newf(errs.Timeout, "ModAVD 实例 %d 启动超时（%.0f 秒内安卓没有启动完成），日志见 %s",
 				i, timeout.Seconds(), m.Root.LogsDir())
 		}
 		if !found && emulator != nil && !emulator.Alive() {
@@ -475,7 +503,7 @@ func (m *Manager) waitBoot(ctx context.Context, i int, timeout time.Duration, em
 			if c, ok := emulator.ExitCode(); ok {
 				code = strconv.FormatUint(uint64(c), 10)
 			}
-			return host.Process{}, errs.Newf(errs.LaunchFailed, "魔改 AVD 实例 %d 启动失败（emulator.exe 退出码 %s）：%s",
+			return host.Process{}, errs.Newf(errs.LaunchFailed, "ModAVD 实例 %d 启动失败（emulator.exe 退出码 %s）：%s",
 				i, code, logTail(logPath, 8))
 		}
 		if adopted != nil && stopSeen != nil && !*stopSeen && m.lockHeld(i, "stop") {
@@ -484,7 +512,7 @@ func (m *Manager) waitBoot(ctx context.Context, i int, timeout time.Duration, em
 		// both the process snapshot and the PID + creation time check must agree, so a failed snapshot is no exit
 		if !found && adopted != nil && !adopted.Alive() {
 			return host.Process{}, errs.Wrap(errs.LaunchFailed, errAdoptedGone,
-				fmt.Sprintf("魔改 AVD 实例 %d 的模拟器（pid %d）在等安卓开机时退出了", i, adopted.PID))
+				fmt.Sprintf("ModAVD 实例 %d 的模拟器（pid %d）在等安卓开机时退出了", i, adopted.PID))
 		}
 		if now := time.Now(); !now.Before(nextReport) {
 			elapsed := now.Sub(started)
@@ -499,6 +527,42 @@ func (m *Manager) waitBoot(ctx context.Context, i int, timeout time.Duration, em
 			return host.Process{}, ctxErr(ctx)
 		}
 	}
+}
+
+var (
+	// adbAfterBootWait: how long the boot wait goes on once the emulator has reported Android booted while adb still
+	// does not answer. adb normally answers before the boot completes; the rest of the timeout would only be waited
+	// out (a user's create waited 300 s for an Android that had booted after 72 s).
+	adbAfterBootWait = 60 * time.Second
+	// bootRegisterEvery: how often the boot wait tries RegisterBooted meanwhile.
+	bootRegisterEvery = 10 * time.Second
+)
+
+// emulatorReportedBoot: the emulator of qemu has reported Android booted. It deletes avd\mas_<i>.avd\bootcompleted.ini
+// when it launches and writes it when the guest reports boot completion, so a file no older than qemu is this boot's.
+var emulatorReportedBoot = func(r *root.Root, i int, qemu host.Process) bool {
+	started := qemu.StartedAt()
+	fi, err := os.Stat(filepath.Join(avd.Dir(r, i), "bootcompleted.ini"))
+	return err == nil && !started.IsZero() && !fi.ModTime().Before(started)
+}
+
+// waitBootFindQemu is the boot wait's process scan (a variable for the tests).
+var waitBootFindQemu = func(m *Manager, i int) (host.Process, bool, error) { return m.findQemu(i) }
+
+// registerBooted is adb's RegisterBooted for instance i (a variable for the tests).
+var registerBooted = func(ctx context.Context, m *Manager, i int) bool {
+	return m.ADB.RegisterBooted(ctx, m.Root.Ports().Serial(i))
+}
+
+// adbUnusableAfterBoot is the boot wait's error when Android has booted but adb never answered: says so, with the
+// last line of the adb server's own log.
+func (m *Manager) adbUnusableAfterBoot(i int, booted time.Time) error {
+	msg := fmt.Sprintf("ModAVD 实例 %d 的安卓已经开好了（模拟器报告开机完成），但之后 %.0f 秒里私有 adb（端口 %d）一直用不了",
+		i, time.Since(booted).Seconds(), m.Root.AdbServerPort())
+	if last := adb.ServerLogLast(m.Root); last != "" {
+		msg += "；adb 自己的日志最后一行：" + last
+	}
+	return errs.New(errs.Timeout, msg+"。日志见 "+m.Root.LogsDir())
 }
 
 // qemuAfterSetup is the qemu process to report once the after-boot setup is done: the one the scan finds now, else
@@ -550,32 +614,32 @@ func poweringOff(v string) bool {
 // scans for the instance's qemu again: found when someone launched it meanwhile (the start adopts that one). Busy when
 // p is still there at the end.
 func (m *Manager) waitShutdown(ctx context.Context, i int, p host.Process, prog *progressor) (host.Process, bool, error) {
-	m.Log.Infof("魔改 AVD 实例 %d 正在关机（模拟器 pid %d 还没退出），等它关完再开机", i, p.PID)
+	m.Log.Infof("ModAVD 实例 %d 正在关机（模拟器 pid %d 还没退出），等它关完再开机", i, p.PID)
 	prog.emit("launch", fmt.Sprintf("实例 %d 正在关机，等它关完再开机", i), progressLaunch/2)
 	if !waitQemuExit(ctx, p, shutdownExitWait) {
 		if err := ctxErr(ctx); err != nil {
 			return host.Process{}, false, err
 		}
-		return host.Process{}, false, errs.WithDetails(errs.Newf(errs.Busy, "魔改 AVD 实例 %d 正在关机，等了 %.0f 秒模拟器（pid %d）还没退出", i,
+		return host.Process{}, false, errs.WithDetails(errs.Newf(errs.Busy, "ModAVD 实例 %d 正在关机，等了 %.0f 秒模拟器（pid %d）还没退出", i,
 			shutdownExitWait.Seconds(), p.PID).WithAdvice(fmt.Sprintf("稍后再开机；一直关不掉的话先 modavd stop %d", i)), map[string]string{errs.Reason: "stopping"})
 	}
 	return m.findQemu(i)
 }
 
 // setupAdvice is added to the error of a start that ended after launching qemu (or adopting an unfinished boot). It
-// names the marker's deadline (until; zero when unknown) as local time and the rules of the Vulkan fix's zygote
-// restart (owedMountGate), so nobody expects the next start to restart zygote under a running game or install, or to
+// names the marker's deadline (until; zero when unknown) as local time and the rules of the guest library fixes'
+// zygote restart (owedMountGate), so nobody expects the next start to restart zygote under a running game or install, or to
 // still finish the setup after the deadline (that start adopts the boot as an ordinary running instance).
 func setupAdvice(until, now time.Time) string {
-	const fix = "这个补丁要重启 zygote，只在前台没有应用、也没有安装正在进行时才挂（不然就留到之后再启动一次，或下次开机）"
+	const fix = "挂这些补丁要重启 zygote，只在前台没有应用、也没有安装正在进行时才挂（不然就留到之后再启动一次，或下次开机）"
 	switch {
 	case until.IsZero():
-		return "模拟器没有关：再启动一次这个实例，就会接着做完这次开机后的设置，其中包括客体 Vulkan 驱动补丁；" + fix
+		return "模拟器没有关：再启动一次这个实例，就会接着做完这次开机后的设置，其中包括客体库补丁；" + fix
 	case !now.Before(until):
-		return "模拟器没有关；这次开机接着做设置的期限（" + clockText(until, now) + "）已过，客体 Vulkan 驱动补丁等下次开机再挂"
+		return "模拟器没有关；这次开机接着做设置的期限（" + clockText(until, now) + "）已过，客体库补丁等下次开机再挂"
 	}
 	return "模拟器没有关：在 " + clockText(until, now) + " 前再启动一次这个实例，就会接着做完这次开机后的设置，" +
-		"过了这个时间客体 Vulkan 驱动补丁就等下次开机再挂；" + fix
+		"过了这个时间客体库补丁就等下次开机再挂；" + fix
 }
 
 // clockText is t as local time for the messages: "15:04" on now's day, else with the date ("10 月 29 日 00:05"; a
@@ -705,13 +769,13 @@ func (m *Manager) writeSetupMarker(i int, s setupMarker) {
 		err = writeFileReplace(m.setupMarkerPath(i), b, strconv.Itoa(os.Getpid()))
 	}
 	if err != nil {
-		m.Log.Warnf("实例 %d 记不下「这次开机后的设置还没做完」（%v）：这次启动要是被打断，再启动一次补不上客体 Vulkan 驱动补丁", i, err)
+		m.Log.Warnf("实例 %d 记不下「这次开机后的设置还没做完」（%v）：这次启动要是被打断，再启动一次补不上客体库补丁", i, err)
 	}
 }
 
 // removeSetupMarker deletes the marker of instance i. A marker left behind after a finished setup would make the
-// next start of this boot run the one-time parts again (harmless while the Vulkan fix is mounted: the script finds
-// the mount; otherwise only with no app in the foreground, no install running and before its deadline), so a failure
+// next start of this boot run the one-time parts again (harmless while the guest library fixes are mounted: the
+// script finds the mounts; otherwise only with no app in the foreground, no install running and before its deadline), so a failure
 // is a warning.
 func (m *Manager) removeSetupMarker(i int) {
 	path := m.setupMarkerPath(i)

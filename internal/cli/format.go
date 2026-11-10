@@ -287,6 +287,9 @@ func formatInfo(w io.Writer, in *emu.InstanceInfo) {
 		}
 		kv("渲染器", r)
 	}
+	if in.GLES32 {
+		kv("报告 GLES 3.2", "开（实验；实际渲染仍是 3.1）")
+	}
 	if p := in.AppProxy; p != nil {
 		state := "关"
 		if p.Enabled {
@@ -412,10 +415,10 @@ func formatStart(w io.Writer, r *emu.StartResult) {
 		fmt.Fprintln(w, "已完成首次初始化")
 	}
 	if r.ZygoteRestarted {
-		fmt.Fprintln(w, "挂上了客体 Vulkan 修复，zygote 已重启（应用都重新开始）")
+		fmt.Fprintln(w, "挂上了客体库补丁（Vulkan 驱动、ARM 转译层），zygote 已重启（应用都重新开始）")
 	}
 	if r.SetupPending {
-		fmt.Fprintf(w, "这次开机的一次性设置（首次初始化、客体 Vulkan 修复）还没做完，再运行一次 modavd start %d 补完\n",
+		fmt.Fprintf(w, "这次开机的一次性设置（首次初始化、客体库补丁）还没做完，再运行一次 modavd start %d 补完\n",
 			in.Index)
 	}
 	if r.LogFile != "" {
@@ -599,7 +602,7 @@ func formatComponents(w io.Writer, data any) {
 		if !fetched {
 			fmt.Fprint(w, "组件都已齐全，不需要下载。")
 		}
-		fmt.Fprintln(w, "完成，可以在 AUTO-MAS 里添加这个文件夹了。")
+		fmt.Fprintln(w, "完成，可以新建实例了；用 AUTO-MAS 的，也可以在 AUTO-MAS 里添加这个文件夹了。")
 	}
 }
 
@@ -672,6 +675,20 @@ func formatPlayStoreGSFID(w io.Writer, r *emu.PlayStoreGSFIDResult) {
 	fmt.Fprintf(w, "  十六进制：%s\n", r.Hex)
 	fmt.Fprintf(w, "在电脑的浏览器里打开 %s ，用要在实例里登录的 Google 账号登录，填入 GSF ID（登记页要哪种写法就填哪种）提交；"+
 		"等一会儿让登记生效，把实例关机再开机，再去登录\n", emu.PlayStoreUncertifiedURL)
+}
+
+func formatGLES32(w io.Writer, r *emu.GLES32Result) {
+	state := map[string]string{"on": "开", "off": "关", "pending-on": "已写入，要关机再开机才生效", "pending-off": "已去掉，要关机再开机才生效"}[r.State]
+	fmt.Fprintf(w, "实例 %d 报告 GLES 3.2 %s：%s（ro.opengles.version=%s）\n", r.Index, r.Action, state, r.Prop)
+	if r.Restarted {
+		fmt.Fprintln(w, "为了让改动生效，关机后又开了一次")
+	}
+	if r.Stopped {
+		fmt.Fprintln(w, "实例原来是关着的，做完已经关掉")
+	}
+	for _, n := range r.Notes {
+		fmt.Fprintln(w, n)
+	}
 }
 
 func formatDisk(w io.Writer, r *emu.DiskTrimResult) {
@@ -784,7 +801,7 @@ func formatHelp(w io.Writer, r *HelpResult) {
 		}
 		return
 	}
-	fmt.Fprintln(w, "modavd：魔改 AVD 实例管理（新建、删除、修改、列出、开机、关机）和 MCP 服务")
+	fmt.Fprintln(w, "modavd：ModAVD 实例管理（新建、删除、修改、列出、开机、关机）和 MCP 服务")
 	fmt.Fprintf(w, "\n用法：%s\n\n命令：\n", r.Usage)
 	// Usage and summary on separate lines: create's usage alone is ~80 columns.
 	for _, e := range r.Commands {
